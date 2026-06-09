@@ -1,270 +1,382 @@
-# Contributing / 贡献指南
+# Contributing to Peak Code
 
-## Read This First / 首先阅读
+Thank you for your interest in contributing to Peak Code. This document defines the standards, processes, and expectations for all contributions. Please read it carefully before opening an issue or pull request.
 
-Thank you for your interest in contributing to Peak Code! We welcome contributions from the community.
-
-感谢您对 Peak Code 贡献的兴趣！我们欢迎来自社区的贡献。
-
-PRs are automatically labeled with a `vouch:*` trust status and a `size:*` diff size based on changed lines.
-
-PR 会自动根据变更行数标记 `vouch:*` 信任状态和 `size:*` 差异大小。
-
-If you are an external contributor, expect `vouch:unvouched` until we explicitly add you to [.github/VOUCHED.td](.github/VOUCHED.td).
-
-如果您是外部贡献者，在我们明确将您添加到 [.github/VOUCHED.td](.github/VOUCHED.td) 之前，您的 PR 将被标记为 `vouch:unvouched`。
+**Peak Code is in an early stage.** The architecture and APIs are still evolving. Proposing sweeping changes that improve long-term maintainability is not just welcome — it is encouraged. That said, every change must be justified, focused, and aligned with the project's core priorities.
 
 ---
 
-## What We Accept / 接受的贡献类型
+## Table of Contents
 
-### Small, focused bug fixes / 小而专注的 Bug 修复
-
-- Fixes for crashes, hangs, or data loss
-- 修复崩溃、挂起或数据丢失问题
-
-### Small reliability fixes / 小的可靠性改进
-
-- Improvements to error handling and recovery
-- 改进错误处理和恢复机制
-
-### Small performance improvements / 小的性能优化
-
-- Optimizations that don't change behavior
-- 不改变行为的优化
-
-### Tightly scoped maintenance work / 范围明确的维护工作
-
-- Dependency updates with no behavioral changes
-- 不改变行为的依赖更新
-- Documentation improvements
-- 文档改进
-
-### Feature requests / 功能请求
-
-- Well-documented feature proposals with use cases
-- 带有使用场景的功能提案
-
----
-
-## What We Are Least Likely To Accept / 最不可能接受的贡献
-
-### Large PRs / 大型 PR
-
-PRs with more than 500 lines of changes are unlikely to be reviewed.
-
-超过 500 行变更的 PR 不太可能被审查。
-
-### Drive-by feature work / 随意的功能添加
-
-Features added without prior discussion are unlikely to be accepted.
-
-未经事先讨论添加的功能不太可能被接受。
-
-### Opinionated rewrites / 主观重写
-
-Large-scale refactoring without clear benefits will be rejected.
-
-没有明确好处的大规模重构将被拒绝。
-
-### Anything that expands product scope / 任何扩大产品范围的内容
-
-If it's not on our roadmap, we probably won't accept it.
-
-如果不在我们的路线图上，我们很可能不会接受。
+- [Code of Conduct](#code-of-conduct)
+- [Core Priorities](#core-priorities)
+- [Ways to Contribute](#ways-to-contribute)
+  - [Report Bugs](#report-bugs)
+  - [Suggest Enhancements](#suggest-enhancements)
+  - [Improve Documentation](#improve-documentation)
+  - [Contribute Code](#contribute-code)
+- [Development Setup](#development-setup)
+  - [Prerequisites](#prerequisites)
+  - [Repository Setup](#repository-setup)
+  - [Development Commands](#development-commands)
+  - [Isolated Development](#isolated-development)
+- [Project Architecture](#project-architecture)
+  - [Monorepo Packages](#monorepo-packages)
+  - [Event Lifecycle](#event-lifecycle)
+  - [Background Workers](#background-workers)
+  - [Runtime Signals](#runtime-signals)
+- [Coding Standards](#coding-standards)
+  - [General Principles](#general-principles)
+  - [TypeScript & Effect-TS](#typescript--effect-ts)
+  - [React & UI](#react--ui)
+  - [Formatting & Linting](#formatting--linting)
+  - [Testing](#testing)
+- [Pull Request Process](#pull-request-process)
+  - [Before You Code](#before-you-code)
+  - [What Makes a Good PR](#what-makes-a-good-pr)
+  - [PR Template](#pr-template)
+  - [Review Process](#review-process)
+- [Transcript Performance Guardrails](#transcript-performance-guardrails)
+- [Local Dev Instance Isolation](#local-dev-instance-isolation)
+- [Package Roles & Subpath Exports](#package-roles--subpath-exports)
+- [Contributor License Agreement](#contributor-license-agreement)
 
 ---
 
-## If You Still Want To Open A PR / 如果您仍然想提交 PR
+## Code of Conduct
 
-### Keep it small / 保持体积小
+This project adheres to the [MIT License](./LICENSE) terms. In all interactions, treat maintainers and fellow contributors with respect. Be constructive, assume good intent, and keep discussions focused on technical merit.
 
-Aim for PRs under 200 lines of changed code.
-
-目标是变更代码不超过 200 行。
-
-### Explain exactly what changed / 清晰说明变更内容
-
-Describe the changes in detail in the PR description.
-
-在 PR 描述中详细说明变更内容。
-
-### Explain exactly why the change should exist / 说明变更原因
-
-What problem does this solve? Why is this the right approach?
-
-这解决了什么问题？为什么这是正确的方法？
-
-### Do not mix unrelated fixes together / 不要混合无关的修复
-
-Each PR should address a single issue or improvement.
-
-每个 PR 应该只解决一个问题或改进。
-
-### If the PR makes anything resembling a UI change / 如果涉及 UI 变更
-
-Include clear before/after images showing the difference.
-
-提供清晰的前后对比图。
-
-### If the change depends on motion, timing, transitions, or interaction details / 如果变更涉及动画、时序、过渡或交互细节
-
-Include a short video demonstrating the behavior.
-
-提供演示行为的短视频。
+We reserve the right to block or ban any participant whose behavior undermines a healthy community.
 
 ---
 
-## Issues First / 先提 Issue
+## Core Priorities
 
-If you are thinking about a non-trivial change, open an issue first.
+Every contribution is evaluated against these priorities, in order:
 
-如果您考虑进行非平凡的变更，请先提交 issue。
+1. **Performance first.** Peak Code wraps resource-intensive AI agent runtimes. The GUI must never be the bottleneck. Every render, every store update, every WebSocket message must justify its cost.
+2. **Reliability first.** Sessions survive restarts. Streaming must not drop frames. State must be deterministic. Partial failures must not corrupt the session.
+3. **Predictability under load and during failures.** Session restarts, reconnections, and partial streams must behave consistently. Graceful degradation is mandatory.
 
-That still does not mean we will want the PR, but it gives you a chance to avoid wasting your time.
-
-这并不意味着我们一定会接受 PR，但可以让您避免浪费时间。
-
----
-
-## Be Realistic / 保持现实
-
-Opening a PR does not create an obligation on our side.
-
-提交 PR 并不会给我们带来义务。
-
-We may close it. We may ignore it. We may ask you to shrink it. We may reimplement the idea ourselves later.
-
-我们可能会关闭它、忽略它、要求您缩小范围，或者稍后自己重新实现这个想法。
-
-If you are fine with that, proceed.
-
-如果您能接受这一点，请继续。
+> **When tradeoffs are unavoidable, choose correctness and robustness over short-term convenience.**
 
 ---
 
-## Code Style / 代码风格
+## Ways to Contribute
 
-### Formatting / 格式化
+### Report Bugs
 
-- Use `bun run fmt` to format your code
-- 使用 `bun run fmt` 格式化代码
-- We use oxfmt as our formatter
-- 我们使用 oxfmt 作为格式化工具
+If you find a bug, [create an issue](https://github.com/PeakCode-AI/PeakCode/issues). A great bug report includes:
 
-### Linting / 代码检查
+- A clear description of the bug and its impact
+- Steps to reproduce, with the exact environment (OS, browser, agent provider)
+- What you expected to happen vs. what actually happened
+- Screenshots, videos, or logs where applicable
+- Whether the issue is reproducible across providers (Codex, Claude, etc.) or provider-specific
 
-- Use `bun run lint` to check for linting issues
-- 使用 `bun run lint` 检查代码问题
-- We use oxlint as our linter
-- 我们使用 oxlint 作为代码检查工具
+### Suggest Enhancements
 
-### Type Checking / 类型检查
+Before proposing a feature:
 
-- Use `bun run typecheck` to check types
-- 使用 `bun run typecheck` 检查类型
+1. Search existing [issues](https://github.com/PeakCode-AI/PeakCode/issues) and [discussions](https://github.com/PeakCode-AI/PeakCode/discussions) to avoid duplicates.
+2. Describe the problem you are solving, not just the solution you want.
+3. Explain why the enhancement aligns with the project's core priorities.
+4. If the change touches the transcript, scroll, or streaming paths, read the [Transcript Performance Guardrails](#transcript-performance-guardrails) first.
 
-### Naming Conventions / 命名规范
+Enhancements that trade performance or reliability for cosmetic convenience will be rejected.
 
-- Use PascalCase for class names and components
-- 类名和组件使用 PascalCase
-- Use camelCase for functions and variables
-- 函数和变量使用 camelCase
-- Use UPPER_CASE_SNAKE_CASE for constants
-- 常量使用 UPPER_CASE_SNAKE_CASE
+### Improve Documentation
+
+Documentation is essential. If you find something missing, unclear, or outdated:
+
+- For architecture docs: submit a PR to `.docs/`
+- For user-facing docs: submit a PR to `docs/`
+- For internal guidance: `AGENTS.md` documents the conventions used by automated agents
+
+When adding documentation, prefer clarity over comprehensiveness. A short, correct document is better than a long, outdated one.
 
 ---
 
-## Testing / 测试
+## Development Setup
 
-### Writing Tests / 编写测试
+### Prerequisites
 
-- All new code should have unit tests
-- 所有新代码都应该有单元测试
-- Use Vitest for testing
-- 使用 Vitest 进行测试
-- Write tests that are fast and deterministic
-- 编写快速且确定性的测试
+| Dependency    | Minimum Version | Notes                                    |
+|---------------|-----------------|------------------------------------------|
+| Bun           | ^1.3.9          | Package manager and runtime              |
+| Node.js       | ^24.13.1        | Also required for some tooling           |
+| Git           | 2.30+           | For version control integration          |
+| Codex CLI     | latest          | Required for Codex provider support      |
 
-### Running Tests / 运行测试
+The project uses **Bun** as its package manager with the `isolated` linker. Do not use `npm` or `yarn`.
+
+### Repository Setup
 
 ```bash
-# Run all tests / 运行所有测试
-bun run test
-
-# Run specific test file / 运行特定测试文件
-bun run test --filter=@peakcode/server -- test/file.test.ts
-
-# Run tests with coverage / 运行测试并生成覆盖率报告
-bun run test --coverage
+git clone https://github.com/PeakCode-AI/PeakCode.git
+cd PeakCode
+bun install
 ```
 
----
+> **Note:** `bun install` installs all workspace dependencies from the root. Do not run `bun install` in individual workspace packages.
 
-## Development Workflow / 开发流程
+### Development Commands
 
-### Branching / 分支
+```bash
+# Full dev environment (web UI + server)
+bun run dev
 
-- Create feature branches from `main`
-- 从 `main` 创建功能分支
-- Name branches with descriptive names (e.g., `fix/crash-on-startup`, `feat/add-dark-mode`)
-- 使用描述性名称命名分支（例如 `fix/crash-on-startup`, `feat/add-dark-mode`）
+# Individual services
+bun run dev:server              # Server only
+bun run dev:web                 # Web UI only
+bun run dev:desktop             # Desktop (Electron) app
 
-### Commits / 提交
+# Quality checks (run before committing)
+bun run test                    # Vitest test suite
+bun run lint                    # oxlint
+bun run fmt                     # oxfmt
+bun run typecheck               # TypeScript type checking
 
-- Use conventional commit messages
-- 使用规范的提交消息
-- Examples: `fix: resolve crash on session restart`, `feat: add keyboard shortcuts`
-- 示例：`fix: resolve crash on session restart`, `feat: add keyboard shortcuts`
+# Desktop distribution builds
+bun run dist:desktop:dmg        # macOS DMG
+bun run dist:desktop:linux      # Linux AppImage
+bun run dist:desktop:win        # Windows installer
+```
 
-### Pull Requests / 拉取请求
+> **Important:** Run all four quality checks (`test`, `lint`, `fmt` check, `typecheck`) in a single pass before opening a PR. Avoid repeatedly running individual checks during iteration — batch them at the end.
 
-- Title should be concise and descriptive
-- 标题应简洁明了
-- Description should explain what was changed and why
-- 描述应说明变更内容和原因
-- Link to related issues
-- 链接到相关 issue
+### Isolated Development
 
----
+When running alongside an existing Peak Code instance, avoid port and state conflicts:
 
-## Code Review / 代码审查
+```bash
+env -u PEAKCODE_AUTH_TOKEN \
+  PEAKCODE_PORT_OFFSET=3158 \
+  PEAKCODE_NO_BROWSER=1 \
+  bun run dev -- --home-dir ./.peakcode-dev --port 58090
+```
 
-### Review Process / 审查流程
+Always dry-run first:
 
-1. PR is submitted
-2. PR is labeled with `vouch:*` and `size:*`
-3. Reviewer is assigned
-4. Reviewer provides feedback
-5. Author addresses feedback
-6. PR is approved or rejected
+```bash
+env -u PEAKCODE_AUTH_TOKEN PEAKCODE_PORT_OFFSET=3158 \
+  bun run dev -- --home-dir ./.peakcode-pr84 --port 58090 --dry-run
+```
 
-### Review Criteria / 审查标准
-
-- Code correctness / 代码正确性
-- Code quality / 代码质量
-- Tests coverage / 测试覆盖率
-- Documentation / 文档
-- Performance / 性能
-- Security / 安全性
+If the UI shows no threads after connecting, the issue is likely a WebSocket auth mismatch or port collision — check your `PEAKCODE_AUTH_TOKEN` and port bindings before debugging SQL.
 
 ---
 
-## License / 许可证
+## Project Architecture
 
-By contributing to this project, you agree that your contributions will be licensed under the MIT License.
+### Monorepo Packages
 
-通过向此项目贡献代码，您同意您的贡献将以 MIT 许可证授权。
+| Path                  | Role                                                        |
+|-----------------------|-------------------------------------------------------------|
+| `apps/server`         | Node.js WebSocket server. Wraps Codex app-server (JSON-RPC over stdio), serves the React web app, manages provider sessions. |
+| `apps/web`            | React/Vite UI. Session UX, conversation rendering, client-side state. Connects via WebSocket. |
+| `apps/desktop`        | Electron desktop shell. Wraps the web app as a native desktop application. |
+| `apps/marketing`      | Marketing / landing page site.                              |
+| `packages/contracts`  | Effect-TS Schema definitions and TypeScript contracts. Schema-only — no runtime logic. |
+| `packages/shared`     | Runtime utilities consumed by server and web. Uses explicit subpath exports — no barrel index. |
+| `packages/effect-acp` | Effect-TS ACP (Agents, Context, Policies) integration.      |
 
-See [LICENSE](./LICENSE) for details.
+### Event Lifecycle
 
-详见 [LICENSE](./LICENSE)。
+The data flow follows a strict layered path:
+
+```
+Browser → WebSocket → wsServer → ProviderService → codex app-server
+                                                                  ↓
+Browser ← ServerPushBus ← OrchestrationEngine ← ProviderRuntimeIngestion
+```
+
+1. User action in the browser becomes a typed WebSocket request via `WsTransport`
+2. `wsServer` decodes and routes the request using shared contracts from `packages/contracts/src/ws.ts`
+3. `ProviderService` starts/resumes a session and communicates with `codex app-server` via JSON-RPC over stdio
+4. `ProviderRuntimeIngestion` ingests provider-native events, normalizing them into orchestration events
+5. `OrchestrationEngine` persists events, updates the read model, and exposes domain events
+6. `ServerPushBus` pushes typed updates to the browser on channels defined in `orchestration.ts`
+
+### Background Workers
+
+Long-running async flows run as queue-backed workers to keep side effects ordered and test synchronization deterministic:
+
+- **ProviderRuntimeIngestion** — ingests provider runtime events
+- **ProviderCommandReactor** — reacts to provider commands asynchronously
+- **CheckpointReactor** — processes session checkpoint tasks
+
+When a milestone completes, the server emits a typed receipt on `RuntimeReceiptBus` (e.g., checkpoint completion, turn quiescence). Tests wait on these receipts instead of polling.
+
+### Runtime Signals
+
+- Checkpoint completion
+- Turn quiescence
+- Diff finalization
+
+These signals are the only approved mechanism for async coordination. Do not poll internal state.
 
 ---
 
-## Contact / 联系方式
+## Coding Standards
 
-If you have any questions, feel free to reach out:
+### General Principles
 
-- Discord: [Join our Discord server](https://discord.gg/jn4EGJjrvv)
-- GitHub Issues: [Open an issue](https://github.com/PeakCode-AI/PeakCode/issues)
+- **No comments in code.** Code should be self-documenting through clear naming, small functions, and Effect-TS typed pipelines. If something is hard to understand without a comment, refactor it.
+- **Prefer extraction over duplication.** When adding functionality, check if shared logic can be extracted to a new module. Duplicate logic across multiple files is a code smell.
+- **No barrel index files.** The `packages/shared` package uses explicit subpath exports (e.g., `@t3tools/shared/git`). Do not add `index.ts` barrel files.
+- **Don't be afraid to refactor.** This is an early project. If existing code stands in the way of a clean solution, change it — but justify the refactoring in your PR.
+- **No emojis in code or UI** unless the user explicitly requests them.
+
+### TypeScript & Effect-TS
+
+- **Strict TypeScript.** The project uses strict TypeScript with Effect-TS heavily. All new code must use Effect-TS patterns (Schema, Effect, Layer) where applicable.
+- **Effect-TS Schema** (`packages/contracts`) is the source of truth for all protocol types, WebSocket message formats, and domain events. Never duplicate type definitions.
+- **Effect Layers** are used for dependency injection. All services should be expressed as `Layer`s composed in the runtime graph.
+- **No `any`.** If you need escape hatch, prefer `unknown` with proper type narrowing. If you must use `any`, explain why in the PR.
+- **Avoid classes.** Prefer Effect-TS functional patterns (pipes, generators, Layers) over OOP patterns.
+
+### React & UI
+
+- **Zustand stores** are the primary state management pattern. Do not introduce Redux, MobX, or other state libraries.
+- **Tailwind CSS** for styling, with theme colors defined in the theme system. Do not use inline styles or CSS modules unless there is a measured performance case.
+- **No explicit color classes outside the theme** (e.g., `text-yellow-400` is not allowed). Use theme tokens.
+- **UI changes must include before/after screenshots** in the PR. For motion/interaction changes, include a video.
+- **Components should be small and focused.** If a component exceeds 200 lines, consider splitting it.
+
+### Formatting & Linting
+
+The project uses **oxlint** for linting and **oxfmt** for formatting (not Prettier, not ESLint).
+
+```bash
+bun run lint       # oxlint
+bun run fmt        # oxfmt (auto-fix)
+bun run fmt:check  # oxfmt (check only)
+```
+
+All code must pass `bun run lint` and `bun run fmt:check` before opening a PR.
+
+### Testing
+
+- **Vitest** is the test framework (run via `bun run test`, never `bun test`).
+- Tests live alongside source files (co-located).
+- **Write tests for new functionality.** If your PR introduces a new module, it must include tests.
+- **Update existing tests** if your change affects behavior.
+- **Functional testing is the primary focus** — the project values integration-level tests over pure unit tests, especially around the orchestration engine, WebSocket protocol, and background worker flows.
+- **Use runtime signals** (`RuntimeReceiptBus`) for test synchronization instead of arbitrary timers or polling.
+
+---
+
+## Pull Request Process
+
+### Before You Code
+
+1. **Open an issue first** (or comment on an existing one) to discuss your proposed changes. This ensures your effort aligns with the project direction and avoids wasted work.
+2. **Keep scope tight.** One concern per PR. If you have multiple unrelated changes, open separate PRs.
+3. **Follow the coding standards** above. Code that does not meet these standards will not be merged.
+
+### What Makes a Good PR
+
+- **Small and focused.** Prefer PRs under 200 lines. Large PRs are difficult to review and more likely to be rejected.
+- **Clear motivation.** Explain *what* changed and *why*. If the change is non-obvious, include the reasoning.
+- **Tests included.** New functionality must include tests. Bug fixes must include a regression test.
+- **Quality checks pass.** Run `bun run test`, `bun run lint`, `bun run fmt:check`, and `bun run typecheck` before opening the PR.
+- **UI changes include screenshots.** Before/after images are required. Videos for animation/interaction changes.
+- **Branch from `main`.** Name your branch descriptively (e.g., `fix-ws-reconnect`, `feat-thread-persistence`).
+
+### PR Template
+
+Use the PR template at [`.github/pull_request_template.md`](.github/pull_request_template.md). It asks for:
+
+- **What Changed** — describe the change clearly and keep scope tight
+- **Why** — explain the problem being solved and why this approach is right
+- **UI Changes** — before/after screenshots (or delete section if not applicable)
+- **Checklist** — small and focused, explanation provided, screenshots included
+
+### Review Process
+
+1. **Initial Review** — A maintainer will review your PR. Response time depends on availability.
+2. **Feedback Loop** — The reviewer may request changes. Address all feedback. If you disagree, explain your reasoning — but be prepared to accept the reviewer's judgment on matters of architecture and project direction.
+3. **Automated Checks** — CI runs lint, typecheck, and the full test suite. All must pass before merge.
+4. **Approval & Merge** — Once approved and passing CI, a maintainer will merge your PR.
+
+> **Note:** Peak Code is a small team project. PRs may sit for a while before review. Please be patient. If a PR has been open for more than two weeks without any response, feel free to ping the thread politely.
+
+---
+
+## Transcript Performance Guardrails
+
+The transcript (chat message list) is the most performance-sensitive component in the UI. When making changes to transcript rendering, scrolling, or state, follow these rules:
+
+1. **Treat auto-scroll as a live-output feature, not a generic "working" indicator.** Buffering, reconnecting, pending approvals, and tool-only activity must not trigger auto-scroll as if assistant text is actively streaming.
+2. **Count real transcript messages only.** Tool and work rows must not retrigger the "new content arrived" auto-stick path.
+3. **Prefer the simpler fork-style transcript path for the common case.** Small and medium transcripts should avoid virtualization churn unless there is a clear measured need.
+4. **If virtualization is used,** never couple `rowVirtualizer.measure()` directly to another bottom-stick or height-follow cycle. Height-follow for live output must stay one-way to avoid measure/scroll feedback loops.
+5. **Preserve these behaviors with dedicated tests** when changing chat scrolling, timeline measurement, or sidebar-driven transcript updates.
+
+Violating these guardrails will cause review rejection. They exist because every prior violation caused observable jank in real-world usage.
+
+---
+
+## Local Dev Instance Isolation
+
+When running a development instance alongside a production or another dev instance:
+
+- **Never start `bun run dev` blindly** while another Peak Code instance is running unless you explicitly intend shared ports and state.
+- **Use an isolated home directory and non-default ports.** Example:
+  ```bash
+  env -u PEAKCODE_AUTH_TOKEN PEAKCODE_PORT_OFFSET=3158 \
+    bun run dev -- --home-dir ./.peakcode-dev --port 58090
+  ```
+- **Always dry-run first** to detect conflicts:
+  ```bash
+  env -u PEAKCODE_AUTH_TOKEN PEAKCODE_PORT_OFFSET=3158 \
+    bun run dev -- --home-dir ./.peakcode-pr84 --port 58090 --dry-run
+  ```
+- **Unset `PEAKCODE_AUTH_TOKEN` for browser dev instances** unless the web app is configured to connect with that token. An auth mismatch will cause silent WebSocket rejection, and the UI will show no threads even though SQLite has data.
+- **Check both server and web ports** with `lsof -nP -iTCP:<port> -sTCP:LISTEN`. A desktop app can bind `127.0.0.1:<port>` while the dev server binds IPv6 `*:<port>` — `localhost` may still hit the wrong process.
+- **If the UI shows no threads,** first verify the server path by inspecting the isolated `state.sqlite`, then probe `orchestration.getSnapshot` over WebSocket. A healthy snapshot with projects/threads means the issue is client connection or hydration, not empty history.
+
+---
+
+## Package Roles & Subpath Exports
+
+### `packages/contracts` — Schema-only
+
+This package is the single source of truth for:
+
+- Provider event schemas
+- WebSocket protocol message formats
+- Model and session types
+
+**No runtime logic** belongs here. If you need a utility function, put it in `packages/shared`.
+
+### `packages/shared` — Explicit subpath exports
+
+This package exports shared runtime utilities. It **does not** use barrel index files. Import like this:
+
+```typescript
+import { DrainableWorker } from "@t3tools/shared/DrainableWorker";
+// NOT: import { DrainableWorker } from "@t3tools/shared";
+```
+
+When adding a new module to `packages/shared`, add a corresponding entry in the package's `exports` field in `package.json`.
+
+---
+
+## Contributor License Agreement
+
+By submitting a pull request, you agree that your contributions will be licensed under the [MIT License](./LICENSE) that covers this project. You represent that you have the right to grant this license.
+
+If this is your first contribution to the project, the CLA bot will ask you to confirm acceptance. Reply with:
+
+```
+I have read the CLA Document and I hereby sign the CLA
+```
+
+This is recorded once per repository and does not need to be repeated for subsequent contributions.
+
+---
+
+*Thank you for helping make Peak Code better. Every thoughtful contribution — whether a bug report, a documentation fix, or a code change — moves the project forward.*
