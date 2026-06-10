@@ -529,7 +529,12 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const buildConfig: Record<string, unknown> = {
     appId: "com.peakcode.app",
     productName,
-    artifactName: "Peak-Code-${version}-${arch}.${ext}",
+    artifactName:
+      platform === "win"
+        ? "Peak-Code-${version}-win-${arch}.${ext}"
+        : platform === "linux"
+          ? "Peak-Code-${version}-linux-${arch}.${ext}"
+          : "Peak-Code-${version}-mac-${arch}.${ext}",
     directories: {
       buildResources: "apps/desktop/resources",
     },
