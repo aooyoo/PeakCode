@@ -112,6 +112,91 @@ import { sameProviderOrder } from "../providerOrdering";
 
 // ── Settings taxonomy ──────────────────────────────────────────────────────
 
+// ── Model Channels (Service Gateways) ──────────────────────────────────────
+
+type ModelChannelId =
+  | "deepseek"
+  | "siliconflow"
+  | "volcano"
+  | "tongyi"
+  | "kimi"
+  | "minimax";
+
+type ModelChannel = {
+  readonly id: ModelChannelId;
+  readonly name: string;
+  readonly subtitle: string;
+  readonly balance?: string;
+  readonly iconColor: string;
+};
+
+const MODEL_CHANNELS: ReadonlyArray<ModelChannel> = [
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    subtitle: "深度求索 · DeepSeek",
+    balance: "¥177.52",
+    iconColor: "#4D6BFA",
+  },
+  {
+    id: "siliconflow",
+    name: "硅基流动",
+    subtitle: "硅基流动 · SiliconFlow",
+    balance: "¥110.87",
+    iconColor: "#6366F1",
+  },
+  {
+    id: "volcano",
+    name: "火山方舟",
+    subtitle: "字节跳动 · 火山方舟",
+    iconColor: "#3B82F6",
+  },
+  {
+    id: "tongyi",
+    name: "通义千问",
+    subtitle: "阿里云 · 百炼平台",
+    iconColor: "#F97316",
+  },
+  {
+    id: "kimi",
+    name: "Kimi",
+    subtitle: "月之暗面 · Kimi",
+    balance: "¥13.96",
+    iconColor: "#1F2937",
+  },
+  {
+    id: "minimax",
+    name: "MiniMax",
+    subtitle: "MiniMax · 海螺 AI",
+    iconColor: "#10B981",
+  },
+];
+
+const MODEL_CHANNELS_STORAGE_KEY = "peakcode:enabled-model-channels:v1";
+
+function readEnabledModelChannels(): ReadonlyArray<ModelChannelId> {
+  try {
+    const raw = localStorage.getItem(MODEL_CHANNELS_STORAGE_KEY);
+    if (!raw) return MODEL_CHANNELS.map((c) => c.id);
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const valid = new Set(MODEL_CHANNELS.map((c) => c.id));
+      return parsed.filter((id): id is ModelChannelId => valid.has(id));
+    }
+  } catch {
+    // ignore
+  }
+  return MODEL_CHANNELS.map((c) => c.id);
+}
+
+function writeEnabledModelChannels(ids: ReadonlyArray<ModelChannelId>): void {
+  try {
+    localStorage.setItem(MODEL_CHANNELS_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
+}
+
 type InstallBinarySettingsKey =
   | "claudeBinaryPath"
   | "codexBinaryPath"
@@ -639,6 +724,10 @@ function SettingsRouteView() {
     Partial<Record<ProviderKind, string | null>>
   >({});
   const [showAllCustomModels, setShowAllCustomModels] = useState(false);
+  const [enabledModelChannels, setEnabledModelChannels] = useState<ReadonlyArray<ModelChannelId>>(
+    readEnabledModelChannels,
+  );
+  const [gatewayRunning, setGatewayRunning] = useState(false);
   const [browserNotificationPermission, setBrowserNotificationPermission] = useState(
     readBrowserNotificationPermissionState(),
   );
@@ -2458,6 +2547,166 @@ function SettingsRouteView() {
         </div>
       </SettingsSection>
 
+      <SettingsSection title="网关代理">
+        <div className="space-y-2">
+          <SettingsRow
+            title="本地 API 网关"
+            description="启动后可通过统一本地端点访问所有已启用的模型渠道。"
+            control={
+              <Switch
+                checked={gatewayRunning}
+                onCheckedChange={(checked) => setGatewayRunning(checked)}
+              />
+            }
+          />
+          {gatewayRunning ? (
+            <div className="mt-4 space-y-5 border-t border-border pt-4">
+              {/* ── Local API ── */}
+              <div>
+                <h4 className="mb-2 text-sm font-semibold text-foreground">Local API</h4>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Listening on http://127.0.0.1:9872/v1
+                </p>
+                <div className="space-y-1">
+                  {[
+                    { label: "Root", url: "http://127.0.0.1:9872/v1" },
+                    { label: "Chat", url: "http://127.0.0.1:9872/v1/chat/completions" },
+                    { label: "Messages", url: "http://127.0.0.1:9872/v1/messages" },
+                    { label: "Responses", url: "http://127.0.0.1:9872/v1/responses" },
+                    { label: "Models", url: "http://127.0.0.1:9872/v1/models" },
+                  ].map((ep) => (
+                    <div
+                      key={ep.label}
+                      className="flex items-center justify-between rounded-md px-3 py-1.5 text-sm hover:bg-[var(--sidebar-accent)]"
+                    >
+                      <div className="flex items-center gap-4">
+                        <span className="w-20 text-xs text-muted-foreground">{ep.label}</span>
+                        <span className="font-mono text-xs text-foreground">{ep.url}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-[var(--color-background-elevated-secondary)] hover:text-foreground"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(ep.url);
+                          toastManager.add({ title: "Copied to clipboard", type: "success" });
+                        }}
+                        aria-label={`Copy ${ep.label} URL`}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── Agent Setup ── */}
+              <div>
+                <h4 className="mb-3 text-sm font-semibold text-foreground">Agent Setup</h4>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {[
+                    {
+                      name: "OpenCode",
+                      status: "Composer models installed",
+                      statusType: "ok" as const,
+                      action: "Open" as const,
+                    },
+                    {
+                      name: "VS Code",
+                      status: "Provider needs update",
+                      statusType: "warn" as const,
+                      action: "Update" as const,
+                    },
+                    {
+                      name: "Kilo Code",
+                      status: "Provider needs update",
+                      statusType: "warn" as const,
+                      action: "Update" as const,
+                    },
+                    {
+                      name: "Claude Code",
+                      status: "Claude Code configured",
+                      statusType: "ok" as const,
+                      action: "Open" as const,
+                    },
+                    {
+                      name: "Codex",
+                      status: "Custom provider installed",
+                      statusType: "ok" as const,
+                      action: "Open" as const,
+                    },
+                    {
+                      name: "Cline",
+                      status: "Provider profile installed",
+                      statusType: "ok" as const,
+                      action: "Open" as const,
+                    },
+                    {
+                      name: "pi",
+                      status: "Custom models installed",
+                      statusType: "ok" as const,
+                      action: "Open" as const,
+                    },
+                  ].map((agent) => (
+                    <div
+                      key={agent.name}
+                      className="flex items-center justify-between rounded-lg border border-border/40 bg-[var(--color-background-panel)] px-3 py-2.5"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className={cn(
+                            "flex size-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white",
+                            agent.name === "OpenCode" && "bg-slate-700",
+                            agent.name === "VS Code" && "bg-blue-500",
+                            agent.name === "Kilo Code" && "bg-neutral-900",
+                            agent.name === "Claude Code" && "bg-orange-500",
+                            agent.name === "Codex" && "bg-emerald-600",
+                            agent.name === "Cline" && "bg-violet-600",
+                            agent.name === "pi" && "bg-rose-500",
+                          )}
+                        >
+                          {agent.name.slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium">{agent.name}</div>
+                          <div
+                            className={cn(
+                              "flex items-center gap-1 text-xs",
+                              agent.statusType === "ok" && "text-emerald-500",
+                              agent.statusType === "warn" && "text-amber-500",
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                "inline-block size-1.5 rounded-full",
+                                agent.statusType === "ok" && "bg-emerald-500",
+                                agent.statusType === "warn" && "bg-amber-500",
+                              )}
+                            />
+                            {agent.status}
+                          </div>
+                        </div>
+                      </div>
+                      <Button
+                        size="xs"
+                        variant={agent.action === "Update" ? "secondary" : "outline"}
+                        onClick={() => {
+                          toastManager.add({
+                            title: `${agent.name} ${agent.action.toLowerCase()}ing...`,
+                            type: "info",
+                          });
+                        }}
+                      >
+                        {agent.action}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </SettingsSection>
+
       <SettingsSection title={messages.settings.models.customSection}>
         <div className="space-y-2">
           <SettingsRow
@@ -2600,6 +2849,75 @@ function SettingsRouteView() {
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          </SettingsRow>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="模型渠道接入">
+        <div className="space-y-2">
+          <SettingsRow
+            title="服务渠道"
+            description="管理第三方模型 API 渠道接入，启用后可在对应提供商中使用这些渠道。"
+            status={
+              <span className="text-[11px] text-muted-foreground">
+                ({enabledModelChannels.length}/{MODEL_CHANNELS.length} 已启用)
+              </span>
+            }
+          >
+            <div className="mt-4 border-t border-border pt-4">
+              <div className="space-y-1">
+                {MODEL_CHANNELS.map((channel) => {
+                  const isEnabled = enabledModelChannels.includes(channel.id);
+                  return (
+                    <div
+                      key={channel.id}
+                      className="group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border/40 px-3 py-2.5 transition-colors hover:bg-[var(--sidebar-accent)]"
+                    >
+                      <div
+                        className="flex size-8 shrink-0 items-center justify-center rounded-md"
+                        style={{ backgroundColor: channel.iconColor }}
+                      >
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="white"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                          <path d="M2 17l10 5 10-5" />
+                          <path d="M2 12l10 5 10-5" />
+                        </svg>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <span>{channel.name}</span>
+                          {channel.balance ? (
+                            <span className="text-xs font-normal text-emerald-500">
+                              余额 {channel.balance}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="text-xs text-muted-foreground">{channel.subtitle}</div>
+                      </div>
+                      <Switch
+                        checked={isEnabled}
+                        onCheckedChange={(checked) => {
+                          const next = checked
+                            ? [...enabledModelChannels, channel.id]
+                            : enabledModelChannels.filter((id) => id !== channel.id);
+                          setEnabledModelChannels(next);
+                          writeEnabledModelChannels(next);
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </SettingsRow>
         </div>
