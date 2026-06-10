@@ -47,6 +47,7 @@ import {
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { StarFilledIcon, StarIcon } from "../../lib/icons";
 import { Skeleton } from "../ui/skeleton";
+import { ModelChannelSection } from "./ModelChannelPicker";
 
 function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): option is {
   value: ProviderKind;
@@ -617,6 +618,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
                 </MenuItem>
               );
             })}
+            <ModelChannelSection />
           </>
         )}
       </MenuPopup>
