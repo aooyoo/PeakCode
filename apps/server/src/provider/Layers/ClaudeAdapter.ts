@@ -199,6 +199,7 @@ interface ClaudeSessionContext {
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
+  lastSentPermissionMode: PermissionMode | undefined;
   currentApiModelId: string | undefined;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
@@ -730,10 +731,7 @@ const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
-const CLAUDE_SETTING_SOURCES = [
-  "user",
-  "project",
-] as const satisfies ReadonlyArray<SettingSource>;
+const CLAUDE_SETTING_SOURCES = ["user", "project"] as const satisfies ReadonlyArray<SettingSource>;
 const EMBEDDED_CLAUDE_SYSTEM_PROMPT_APPEND = [
   "You are running inside Peak Code, a coding app that embeds the Claude Agent SDK.",
   "Do not present the host app as Claude Code unless the user is explicitly asking about Claude Code.",
@@ -3317,6 +3315,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           streamFiber: undefined,
           startedAt,
           basePermissionMode: permissionMode,
+          lastSentPermissionMode: undefined,
           currentApiModelId: apiModelId,
           resumeSessionId: sessionId,
           pendingApprovals,
@@ -3432,16 +3431,22 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // "plan" maps directly to the SDK's "plan" permission mode;
         // "default" restores the session's original permission mode.
         // When interactionMode is absent we leave the current mode unchanged.
-        if (input.interactionMode === "plan") {
-          yield* Effect.tryPromise({
-            try: () => context.query.setPermissionMode("plan"),
-            catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
-          });
-        } else if (input.interactionMode === "default") {
-          yield* Effect.tryPromise({
-            try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
-            catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
-          });
+        const targetPermissionMode: PermissionMode =
+          input.interactionMode === "plan"
+            ? "plan"
+            : (context.basePermissionMode ?? "default");
+
+        if (
+          input.interactionMode === "plan" ||
+          input.interactionMode === "default"
+        ) {
+          if (context.lastSentPermissionMode !== targetPermissionMode) {
+            yield* Effect.tryPromise({
+              try: () => context.query.setPermissionMode(targetPermissionMode),
+              catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
+            });
+            context.lastSentPermissionMode = targetPermissionMode;
+          }
         }
 
         const turnId = TurnId.makeUnsafe(yield* Random.nextUUIDv4);
