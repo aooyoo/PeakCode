@@ -55,6 +55,7 @@ function createSendTurnHarness(runtimeMode: "approval-required" | "full-access" 
     collabReceiverTurns: new Map(),
     collabReceiverParents: new Map(),
     reviewTurnIds: new Set<string>(),
+    lastSentTurnParams: undefined,
   };
 
   const requireSession = vi
@@ -921,6 +922,89 @@ describe("sendTurn", () => {
         threadId: asThreadId("thread_1"),
       }),
     ).rejects.toThrow("Turn input must include text or attachments.");
+  });
+});
+
+describe("sendTurn turn-param deduplication", () => {
+  it("first turn (lastSentTurnParams undefined) sends collaborationMode, runtimeOverrides, model, and effort", async () => {
+    const { manager, sendRequest } = createSendTurnHarness("full-access");
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "hello",
+      interactionMode: "default",
+      effort: "medium",
+    });
+    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    expect(params).toHaveProperty("collaborationMode");
+    expect(params).toHaveProperty("approvalPolicy", "never");
+    expect(params).toHaveProperty("sandboxPolicy");
+    expect(params).toHaveProperty("model");
+    expect(params).toHaveProperty("effort", "medium");
+  });
+
+  it("second turn with identical params omits collaborationMode, runtimeOverrides, model, and effort", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness("full-access");
+    (context as Record<string, unknown>).lastSentTurnParams = {
+      interactionMode: "default",
+      runtimeMode: "full-access",
+      model: "gpt-5.3-codex",
+      effort: "medium",
+    };
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "follow-up",
+      interactionMode: "default",
+      effort: "medium",
+    });
+    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    expect(params).not.toHaveProperty("collaborationMode");
+    expect(params).not.toHaveProperty("approvalPolicy");
+    expect(params).not.toHaveProperty("sandboxPolicy");
+    expect(params).not.toHaveProperty("effort");
+    expect(params).not.toHaveProperty("model");
+  });
+
+  it("turn after interactionMode change re-sends collaborationMode", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness("full-access");
+    (context as Record<string, unknown>).lastSentTurnParams = {
+      interactionMode: "default",
+      runtimeMode: "full-access",
+      model: "gpt-5.3-codex",
+      effort: "medium",
+    };
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "plan this",
+      interactionMode: "plan",
+      effort: "medium",
+    });
+    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    expect(params).toHaveProperty("collaborationMode");
+    const collab = params.collaborationMode as { mode: string };
+    expect(collab.mode).toBe("plan");
+    expect(params).not.toHaveProperty("approvalPolicy");
+    expect(params).not.toHaveProperty("sandboxPolicy");
+  });
+
+  it("turn after runtimeMode change re-sends approvalPolicy and sandboxPolicy", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness("full-access");
+    (context as Record<string, unknown>).lastSentTurnParams = {
+      interactionMode: "default",
+      runtimeMode: "full-access",
+      model: "gpt-5.3-codex",
+      effort: "medium",
+    };
+    (context.session as Record<string, unknown>).runtimeMode = "approval-required";
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "next turn",
+      interactionMode: "default",
+      effort: "medium",
+    });
+    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    expect(params).toHaveProperty("approvalPolicy", "untrusted");
+    expect(params).toHaveProperty("sandboxPolicy", { type: "readOnly" });
+    expect(params).not.toHaveProperty("collaborationMode");
   });
 });
 
