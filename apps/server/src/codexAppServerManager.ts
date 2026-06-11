@@ -106,6 +106,14 @@ interface CodexSessionContext {
   nextRequestId: number;
   stopping: boolean;
   discovery?: boolean;
+  lastSentTurnParams: CodexLastSentTurnParams | undefined;
+}
+
+interface CodexLastSentTurnParams {
+  interactionMode: "default" | "plan" | undefined;
+  runtimeMode: RuntimeMode | undefined;
+  model: string | undefined;
+  effort: string | undefined;
 }
 
 interface CodexSkillListInput {
@@ -728,6 +736,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         reviewTurnIds: new Set(),
         nextRequestId: 1,
         stopping: false,
+        lastSentTurnParams: undefined,
       };
 
       this.sessions.set(threadId, context);
@@ -833,6 +842,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadOpenMethod = "thread/start";
         threadOpenResponse = await this.sendRequest(context, "thread/start", threadStartParams);
       }
+      context.lastSentTurnParams = undefined;
 
       const threadOpenRecord = this.readObject(threadOpenResponse);
       const threadIdRaw =
@@ -938,6 +948,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (!providerThreadId) {
       throw new Error("Session is missing provider resume thread id.");
     }
+    const normalizedModel = resolveCodexModelForAccount(
+      normalizeCodexModelSlug(input.model ?? context.session.model),
+      context.account,
+    );
+    const normalizedEffort = input.effort;
+    const interactionMode = input.interactionMode;
+
+    const last = context.lastSentTurnParams;
+    const isFirstTurn = last === undefined;
+    const runtimeModeChanged = isFirstTurn || last.runtimeMode !== context.session.runtimeMode;
+    const interactionModeChanged = isFirstTurn || last.interactionMode !== interactionMode;
+    const modelChanged = isFirstTurn || last.model !== normalizedModel;
+    const effortChanged = isFirstTurn || last.effort !== normalizedEffort;
+
     const turnStartParams: {
       threadId: string;
       input: Array<
@@ -962,34 +986,45 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     } = {
       threadId: providerThreadId,
       input: turnInput,
-      ...mapCodexRuntimeModeToTurnOverrides(context.session.runtimeMode),
     };
-    const normalizedModel = resolveCodexModelForAccount(
-      normalizeCodexModelSlug(input.model ?? context.session.model),
-      context.account,
-    );
-    if (normalizedModel) {
+
+    if (runtimeModeChanged) {
+      Object.assign(turnStartParams, mapCodexRuntimeModeToTurnOverrides(context.session.runtimeMode));
+    }
+
+    if (normalizedModel && modelChanged) {
       turnStartParams.model = normalizedModel;
     }
+
     if (input.serviceTier !== undefined) {
       turnStartParams.serviceTier = input.serviceTier;
     }
-    if (input.effort) {
-      turnStartParams.effort = input.effort;
+
+    if (normalizedEffort && effortChanged) {
+      turnStartParams.effort = normalizedEffort;
     }
-    const collaborationMode = buildCodexCollaborationMode({
-      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-      ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
-      ...(input.effort !== undefined ? { effort: input.effort } : {}),
-    });
-    if (collaborationMode) {
-      if (!turnStartParams.model) {
-        turnStartParams.model = collaborationMode.settings.model;
+
+    if (interactionModeChanged) {
+      const collaborationMode = buildCodexCollaborationMode({
+        ...(interactionMode !== undefined ? { interactionMode } : {}),
+        ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
+        ...(normalizedEffort !== undefined ? { effort: normalizedEffort } : {}),
+      });
+      if (collaborationMode) {
+        if (!turnStartParams.model) {
+          turnStartParams.model = collaborationMode.settings.model;
+        }
+        turnStartParams.collaborationMode = collaborationMode;
       }
-      turnStartParams.collaborationMode = collaborationMode;
     }
 
     const response = await this.sendRequest(context, "turn/start", turnStartParams);
+    context.lastSentTurnParams = {
+      interactionMode,
+      runtimeMode: context.session.runtimeMode,
+      model: normalizedModel,
+      effort: normalizedEffort,
+    };
     const turnIdRaw = this.readString(this.readObject(this.readObject(response), "turn"), "id");
     if (!turnIdRaw) {
       throw new Error("turn/start response did not include a turn id.");
@@ -1346,6 +1381,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         reviewTurnIds: new Set(),
         nextRequestId: 1,
         stopping: false,
+        lastSentTurnParams: undefined,
       };
 
       this.sessions.set(threadId, context);
@@ -1915,6 +1951,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       nextRequestId: 1,
       stopping: false,
       discovery: true,
+      lastSentTurnParams: undefined,
     };
 
     this.discoverySessions.set(normalizedCwd, context);
