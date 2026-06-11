@@ -52,6 +52,9 @@ userdata/
 # Claude / IDE local config
 .claude/
 
+# Internal review tools — never committed
+scripts/pr-review.sh
+
 # Misc local artifacts
 成/
 .cowork-temp/attachments/manual/open-code-review-skill-1781013680555-kjr4cb.zip
@@ -64,3 +67,4 @@ userdata/
 .cowork-temp/open-code-review-skill-inspect/open-code-review-skill/examples/.opencodereview/rule.json
 scripts/pr-review.sh
 .cowork-temp/open-code-review-skill-inspect/open-code-review-skill/README.md
+SKILL.md
