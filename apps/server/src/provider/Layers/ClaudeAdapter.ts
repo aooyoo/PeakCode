@@ -733,7 +733,6 @@ const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
 const CLAUDE_SETTING_SOURCES = [
   "user",
   "project",
-  "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
 const EMBEDDED_CLAUDE_SYSTEM_PROMPT_APPEND = [
   "You are running inside Peak Code, a coding app that embeds the Claude Agent SDK.",
