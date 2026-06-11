@@ -934,7 +934,7 @@ describe("sendTurn turn-param deduplication", () => {
       interactionMode: "default",
       effort: "medium",
     });
-    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    const params = sendRequest.mock.calls[0]![2] as Record<string, unknown>;
     expect(params).toHaveProperty("collaborationMode");
     expect(params).toHaveProperty("approvalPolicy", "never");
     expect(params).toHaveProperty("sandboxPolicy");
@@ -956,7 +956,7 @@ describe("sendTurn turn-param deduplication", () => {
       interactionMode: "default",
       effort: "medium",
     });
-    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    const params = sendRequest.mock.calls[0]![2] as Record<string, unknown>;
     expect(params).not.toHaveProperty("collaborationMode");
     expect(params).not.toHaveProperty("approvalPolicy");
     expect(params).not.toHaveProperty("sandboxPolicy");
@@ -978,7 +978,7 @@ describe("sendTurn turn-param deduplication", () => {
       interactionMode: "plan",
       effort: "medium",
     });
-    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    const params = sendRequest.mock.calls[0]![2] as Record<string, unknown>;
     expect(params).toHaveProperty("collaborationMode");
     const collab = params.collaborationMode as { mode: string };
     expect(collab.mode).toBe("plan");
@@ -1001,7 +1001,7 @@ describe("sendTurn turn-param deduplication", () => {
       interactionMode: "default",
       effort: "medium",
     });
-    const params = sendRequest.mock.calls[0][2] as Record<string, unknown>;
+    const params = sendRequest.mock.calls[0]![2] as Record<string, unknown>;
     expect(params).toHaveProperty("approvalPolicy", "untrusted");
     expect(params).toHaveProperty("sandboxPolicy", { type: "readOnly" });
     expect(params).not.toHaveProperty("collaborationMode");
