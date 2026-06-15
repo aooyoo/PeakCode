@@ -3432,14 +3432,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // "default" restores the session's original permission mode.
         // When interactionMode is absent we leave the current mode unchanged.
         const targetPermissionMode: PermissionMode =
-          input.interactionMode === "plan"
-            ? "plan"
-            : (context.basePermissionMode ?? "default");
+          input.interactionMode === "plan" ? "plan" : (context.basePermissionMode ?? "default");
 
-        if (
-          input.interactionMode === "plan" ||
-          input.interactionMode === "default"
-        ) {
+        if (input.interactionMode === "plan" || input.interactionMode === "default") {
           if (context.lastSentPermissionMode !== targetPermissionMode) {
             yield* Effect.tryPromise({
               try: () => context.query.setPermissionMode(targetPermissionMode),

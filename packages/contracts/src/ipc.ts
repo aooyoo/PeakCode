@@ -119,6 +119,13 @@ import type {
   ListLocalUserSkillsResult,
 } from "./providerDiscovery";
 import type { ProviderCompactThreadInput } from "./provider";
+import type {
+  GatewayConfig,
+  GatewayConfigPatch,
+  GatewaySecretStatusResult,
+  GatewaySetApiKeyInput,
+  GatewayRemoveApiKeyInput,
+} from "./gateway";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -421,6 +428,13 @@ export interface NativeApi {
     readPlugin: (input: ProviderReadPluginInput) => Promise<ProviderReadPluginResult>;
     listModels: (input: ProviderListModelsInput) => Promise<ProviderListModelsResult>;
     listAgents: (input: ProviderListAgentsInput) => Promise<ProviderListAgentsResult>;
+  };
+  gateway: {
+    getConfig: () => Promise<GatewayConfig>;
+    updateConfig: (input: GatewayConfigPatch) => Promise<GatewayConfig>;
+    getSecretStatus: () => Promise<GatewaySecretStatusResult>;
+    setApiKey: (input: GatewaySetApiKeyInput) => Promise<GatewaySecretStatusResult>;
+    removeApiKey: (input: GatewayRemoveApiKeyInput) => Promise<GatewaySecretStatusResult>;
   };
   skills: {
     listLocal: () => Promise<ListLocalUserSkillsResult>;

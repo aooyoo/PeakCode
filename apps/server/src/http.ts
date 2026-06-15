@@ -18,15 +18,27 @@ import {
 import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import { authErrorResponse, makeEffectAuthRequest, serveAuthHttpRoute } from "./auth/http";
 import { ServerAuth } from "./auth/Services/ServerAuth";
+import { ServerSecretStore } from "./auth/Services/ServerSecretStore";
 import type { ServerAuthShape } from "./auth/Services/ServerAuth";
 import type { SessionCredentialServiceShape } from "./auth/Services/SessionCredentialService";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
 import { deriveAuthClientMetadata } from "./auth/utils";
 import { ServerConfig, type ServerConfigShape } from "./config";
+import {
+  GATEWAY_ROUTE_PREFIX,
+  gatewaySecretName,
+  makeGatewayModelsPayload,
+  proxyGatewayChat,
+  responsesPayloadToChatPayload,
+  chatResponseToResponsesResponse,
+  chatStreamToResponsesStream,
+  resolveGatewayChannel,
+} from "./gateway";
 import { LOCAL_IMAGE_ROUTE_PATH, resolveAllowedLocalImageFile } from "./localImageFiles.ts";
 import type { ProjectFaviconResolverShape } from "./project/Services/ProjectFaviconResolver";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver";
 import type { ServerReadiness } from "./server/readiness";
+import { ServerSettingsService } from "./serverSettings";
 
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
 const decodeBootstrapInput = Schema.decodeUnknownEffect(AuthBootstrapInput);
@@ -61,6 +73,7 @@ export function makeEffectHttpRouteLayer(readiness: ServerReadiness) {
     projectFaviconEffectRouteLayer,
     localImageEffectRouteLayer,
     attachmentsEffectRouteLayer,
+    gatewayEffectRouteLayer,
     staticAndDevEffectRouteLayer,
   );
 }
@@ -96,6 +109,132 @@ const readEffectJson = (request: HttpServerRequest.HttpServerRequest, message: s
         })(message),
     ),
   );
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function gatewayErrorResponse(message: string, status: number) {
+  return HttpServerResponse.jsonUnsafe(
+    { error: { type: "peakcode_gateway_error", message } },
+    { status },
+  );
+}
+
+const requireGatewayRequestAccess = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const config = yield* ServerConfig;
+  const url = HttpServerRequest.toURL(request);
+  if (url && isLegacyTokenAuthorized({ config, url })) return;
+  const serverAuth = yield* ServerAuth;
+  yield* serverAuth.authenticateHttpRequest(makeEffectAuthRequest(request));
+});
+
+const gatewayEffectRouteLayer = HttpRouter.add(
+  "*",
+  `${GATEWAY_ROUTE_PREFIX}/*`,
+  Effect.gen(function* () {
+    yield* requireGatewayRequestAccess;
+
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (!url) return gatewayErrorResponse("Bad Request", 400);
+
+    const serverSettings = yield* ServerSettingsService;
+    const secretStore = yield* ServerSecretStore;
+    const gatewayConfig = (yield* serverSettings.getSettings).gateway;
+    if (!gatewayConfig.enabled) {
+      return gatewayErrorResponse("PeakCode gateway is disabled.", 503);
+    }
+
+    if (request.method === "GET" && url.pathname === `${GATEWAY_ROUTE_PREFIX}/models`) {
+      return HttpServerResponse.jsonUnsafe(makeGatewayModelsPayload(gatewayConfig));
+    }
+
+    const isChatCompletions = url.pathname === `${GATEWAY_ROUTE_PREFIX}/chat/completions`;
+    const isResponses = url.pathname === `${GATEWAY_ROUTE_PREFIX}/responses`;
+    if (request.method !== "POST" || (!isChatCompletions && !isResponses)) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+
+    const payload = yield* readEffectJson(request, "Invalid gateway request payload.").pipe(
+      Effect.mapError(() => ({ message: "Invalid JSON request body.", status: 400 as const })),
+    );
+    if (!isRecord(payload)) {
+      return gatewayErrorResponse("Request body must be a JSON object.", 400);
+    }
+
+    const requestedModel = typeof payload.model === "string" ? payload.model.trim() : null;
+    const { channel: upstream, model } = resolveGatewayChannel(gatewayConfig, requestedModel);
+    if (!upstream) {
+      return gatewayErrorResponse("No gateway channel is configured.", 400);
+    }
+    if (!upstream.enabled) {
+      return gatewayErrorResponse(`Gateway channel '${upstream.id}' is disabled.`, 400);
+    }
+    const apiKeyBytes = yield* secretStore.get(gatewaySecretName(upstream.id));
+    const apiKey = apiKeyBytes ? new TextDecoder().decode(apiKeyBytes).trim() : "";
+    if (!apiKey) {
+      return gatewayErrorResponse(
+        `Gateway channel '${upstream.id}' has no API key configured.`,
+        401,
+      );
+    }
+
+    try {
+      if (isResponses) {
+        const chatPayload = responsesPayloadToChatPayload(payload);
+        chatPayload.model = model;
+        const upstreamResponse = yield* Effect.tryPromise({
+          try: () =>
+            proxyGatewayChat({
+              config: gatewayConfig,
+              payload: chatPayload as Record<string, unknown>,
+              apiKey,
+            }),
+          catch: (cause) => ({
+            message: cause instanceof Error ? cause.message : "Gateway upstream request failed.",
+            status: 502 as const,
+          }),
+        });
+        const response = upstreamResponse.headers.get("content-type")?.includes("text/event-stream")
+          ? chatStreamToResponsesStream(upstreamResponse, requestedModel)
+          : yield* Effect.tryPromise({
+              try: () => chatResponseToResponsesResponse(upstreamResponse, requestedModel),
+              catch: () => ({
+                message: "Failed to convert gateway response.",
+                status: 502 as const,
+              }),
+            });
+        return HttpServerResponse.fromWeb(response);
+      }
+
+      const upstreamResponse = yield* Effect.tryPromise({
+        try: () =>
+          proxyGatewayChat({
+            config: gatewayConfig,
+            payload: { ...payload, model } as Record<string, unknown>,
+            apiKey,
+          }),
+        catch: (cause) => ({
+          message: cause instanceof Error ? cause.message : "Gateway upstream request failed.",
+          status: 502 as const,
+        }),
+      });
+
+      return HttpServerResponse.fromWeb(upstreamResponse);
+    } catch (error) {
+      return gatewayErrorResponse(
+        typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : "Gateway request failed.",
+        typeof (error as { status?: unknown }).status === "number"
+          ? (error as { status: number }).status
+          : 500,
+      );
+    }
+  }),
+);
 
 const authEffectRouteLayer = HttpRouter.add(
   "*",

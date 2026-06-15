@@ -44,8 +44,6 @@ describe("applyServerSettingsPatch gateway channels", () => {
       "kimi",
       "minimax",
     ]);
-    expect(next.gateway.channels.find((channel) => channel.id === "kimi")?.model).toBe(
-      "kimi-k2.5",
-    );
+    expect(next.gateway.channels.find((channel) => channel.id === "kimi")?.model).toBe("kimi-k2.5");
   });
 });

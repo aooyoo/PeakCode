@@ -14,10 +14,9 @@ export function resolveGatewayChannel(
 ): { channel: GatewayChannelConfig | null; model: string | null } {
   const slashIndex = requestedModel?.indexOf("/") ?? -1;
   const requestedChannelId = slashIndex > 0 ? requestedModel?.slice(0, slashIndex) : null;
-  const channelId =
-    config.channels.some((channel) => channel.id === requestedChannelId)
-      ? requestedChannelId
-      : config.activeChannelId;
+  const channelId = config.channels.some((channel) => channel.id === requestedChannelId)
+    ? requestedChannelId
+    : config.activeChannelId;
   const channel = config.channels.find((candidate) => candidate.id === channelId) ?? null;
   const model =
     requestedModel && requestedChannelId === channelId
@@ -80,8 +79,7 @@ function responsesInputToMessages(payload: Record<string, unknown>): Record<stri
       messages.push({
         role: "tool",
         tool_call_id: item.call_id,
-        content:
-          typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
+        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
       });
       continue;
     }
@@ -151,9 +149,10 @@ export async function proxyGatewayChat(input: {
   config: GatewayConfig;
   payload: Record<string, unknown>;
   apiKey: string;
-  signal?: AbortSignal;
+  signal?: AbortSignal | null;
 }): Promise<Response> {
-  const requestedModel = typeof input.payload.model === "string" ? input.payload.model.trim() : null;
+  const requestedModel =
+    typeof input.payload.model === "string" ? input.payload.model.trim() : null;
   const { channel, model } = resolveGatewayChannel(input.config, requestedModel);
   if (!channel || !channel.enabled || !channel.baseUrl || !model) {
     return Response.json(
@@ -169,7 +168,7 @@ export async function proxyGatewayChat(input: {
       Accept: input.payload.stream === true ? "text/event-stream" : "application/json",
     },
     body: JSON.stringify({ ...input.payload, model }),
-    signal: input.signal,
+    signal: input.signal ?? null,
   });
 }
 
@@ -197,10 +196,10 @@ export async function chatResponseToResponsesResponse(
   requestedModel: unknown,
 ): Promise<Response> {
   const payload = (await response.json()) as unknown;
-  if (!response.ok || !isRecord(payload)) return Response.json(payload, { status: response.status });
-  const firstChoice = Array.isArray(payload.choices) && isRecord(payload.choices[0])
-    ? payload.choices[0]
-    : null;
+  if (!response.ok || !isRecord(payload))
+    return Response.json(payload, { status: response.status });
+  const firstChoice =
+    Array.isArray(payload.choices) && isRecord(payload.choices[0]) ? payload.choices[0] : null;
   const message = firstChoice && isRecord(firstChoice.message) ? firstChoice.message : null;
   const output: unknown[] = [];
   const text = message ? textFromContent(message.content) : "";
@@ -247,7 +246,8 @@ export function chatStreamToResponsesStream(response: Response, requestedModel: 
   const body = response.body;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: Record<string, unknown>) => controller.enqueue(encoder.encode(sse(event)));
+      const send = (event: Record<string, unknown>) =>
+        controller.enqueue(encoder.encode(sse(event)));
       send({
         type: "response.created",
         response: {

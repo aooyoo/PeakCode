@@ -8,6 +8,8 @@ import {
   WS_METHODS,
   WsRpcError,
   WsRpcGroup,
+  type GatewayChannelId,
+  type GatewaySecretStatusResult,
   type GitActionProgressEvent,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
@@ -23,6 +25,7 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import { authErrorResponse, makeEffectAuthRequest } from "./auth/http";
 import { ServerAuth } from "./auth/Services/ServerAuth";
+import { ServerSecretStore } from "./auth/Services/ServerSecretStore";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { ServerConfig } from "./config";
@@ -39,6 +42,7 @@ import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryS
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
+import { gatewaySecretName } from "./gateway";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { listLocalUserSkills } from "./localSkills";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment";
@@ -193,6 +197,7 @@ export const makeWsRpcLayer = () =>
       const lifecycleEvents = yield* ServerLifecycleEvents;
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
+      const secretStore = yield* ServerSecretStore;
       const serverSettings = yield* ServerSettingsService;
       const terminalManager = yield* TerminalManager;
       const workspaceEntries = yield* WorkspaceEntries;
@@ -722,6 +727,88 @@ export const makeWsRpcLayer = () =>
           rpcEffect(
             Effect.tryPromise(() => listLocalUserSkills()),
             "Failed to list local skills",
+          ),
+
+        [WS_METHODS.gatewayGetConfig]: () =>
+          rpcEffect(
+            serverSettings.getSettings.pipe(Effect.map((s) => s.gateway)),
+            "Failed to get gateway config",
+          ),
+
+        [WS_METHODS.gatewayUpdateConfig]: (patch) =>
+          rpcEffect(
+            serverSettings.updateSettings({ gateway: patch }).pipe(Effect.map((s) => s.gateway)),
+            "Failed to update gateway config",
+          ),
+
+        [WS_METHODS.gatewayGetSecretStatus]: () =>
+          rpcEffect(
+            serverSettings.getSettings.pipe(
+              Effect.flatMap((s) =>
+                Effect.all(
+                  s.gateway.channels.map((ch) =>
+                    secretStore.get(gatewaySecretName(ch.id)).pipe(
+                      Effect.map((value): GatewaySecretStatusResult["secrets"][number] => ({
+                        channelId: ch.id,
+                        hasApiKey: value !== null && value.byteLength > 0,
+                      })),
+                    ),
+                  ),
+                ),
+              ),
+              Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
+            ),
+            "Failed to get gateway secret status",
+          ),
+
+        [WS_METHODS.gatewaySetApiKey]: (input) =>
+          rpcEffect(
+            secretStore
+              .set(gatewaySecretName(input.channelId), new TextEncoder().encode(input.apiKey))
+              .pipe(
+                Effect.flatMap(() =>
+                  serverSettings.getSettings.pipe(
+                    Effect.flatMap((s) =>
+                      Effect.all(
+                        s.gateway.channels.map((ch) =>
+                          secretStore.get(gatewaySecretName(ch.id)).pipe(
+                            Effect.map((value) => ({
+                              channelId: ch.id,
+                              hasApiKey: value !== null && value.byteLength > 0,
+                            })),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
+                  ),
+                ),
+              ),
+            "Failed to set gateway API key",
+          ),
+
+        [WS_METHODS.gatewayRemoveApiKey]: (input) =>
+          rpcEffect(
+            secretStore.remove(gatewaySecretName(input.channelId)).pipe(
+              Effect.flatMap(() =>
+                serverSettings.getSettings.pipe(
+                  Effect.flatMap((s) =>
+                    Effect.all(
+                      s.gateway.channels.map((ch) =>
+                        secretStore.get(gatewaySecretName(ch.id)).pipe(
+                          Effect.map((value) => ({
+                            channelId: ch.id,
+                            hasApiKey: value !== null && value.byteLength > 0,
+                          })),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
+                ),
+              ),
+            ),
+            "Failed to remove gateway API key",
           ),
       });
     }),

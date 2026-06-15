@@ -23,11 +23,13 @@ const config = {
 };
 
 describe("gateway protocol conversion", () => {
+  const deepseek = config.channels[0]!;
+
   it("routes prefixed models to the matching channel", () => {
     const multiChannelConfig = {
       ...config,
       channels: [
-        config.channels[0],
+        deepseek,
         {
           id: "kimi" as const,
           name: "Kimi",
@@ -53,7 +55,7 @@ describe("gateway protocol conversion", () => {
       makeGatewayModelsPayload({
         ...config,
         channels: [
-          config.channels[0],
+          deepseek,
           {
             id: "kimi",
             name: "Kimi",
@@ -71,10 +73,7 @@ describe("gateway protocol conversion", () => {
         ],
       }),
     ).toMatchObject({
-      data: [
-        { id: "deepseek/deepseek-chat" },
-        { id: "kimi/kimi-k2.5" },
-      ],
+      data: [{ id: "deepseek/deepseek-chat" }, { id: "kimi/kimi-k2.5" }],
     });
   });
 
@@ -147,10 +146,7 @@ describe("gateway protocol conversion", () => {
       { headers: { "Content-Type": "text/event-stream" } },
     );
 
-    const body = await chatStreamToResponsesStream(
-      upstream,
-      "deepseek/deepseek-chat",
-    ).text();
+    const body = await chatStreamToResponsesStream(upstream, "deepseek/deepseek-chat").text();
     expect(body).toContain('"call_id":"call_a"');
     expect(body).toContain('"arguments":"{\\"x\\":1}"');
     expect(body).toContain('"call_id":"call_b"');
