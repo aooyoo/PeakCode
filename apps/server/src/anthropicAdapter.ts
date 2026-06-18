@@ -141,10 +141,13 @@ export function anthropicToOpenAIChat(payload: Record<string, unknown>): Record<
 
       // Emit assistant tool_calls as their own message (OpenAI requires
       // tool_calls to live on an assistant message with null content).
+      // DeepSeek reasoning models require reasoning_content on tool_calls
+      // messages — backfill a placeholder (cf. cc-switch).
       if (assistantToolCalls.length > 0) {
         messages.push({
           role: "assistant",
           content: textParts.length > 0 ? textParts.join("\n") : null,
+          reasoning_content: "tool call",
           tool_calls: assistantToolCalls,
         });
       } else if (textParts.length > 0) {
@@ -172,38 +175,41 @@ export function anthropicToOpenAIChat(payload: Record<string, unknown>): Record<
   if (typeof payload.temperature === "number") chatPayload.temperature = payload.temperature;
   if (typeof payload.top_p === "number") chatPayload.top_p = payload.top_p;
 
-  // Tools: Anthropic custom tools {name, description, input_schema} -> OpenAI
-  // function tools. Anthropic server-side tools (web_search_*, computer_use,
-  // text_editor, bash, etc.) have no input_schema and are not translatable —
-  // they must be dropped, otherwise the upstream rejects the request.
+  // Tools: Anthropic custom tools → OpenAI function tools.
+  // Claude Code's built-in tools (Bash/Read/Write/etc.) come as:
+  //   { name: "Read", description: "...", input_schema: {...} }
+  // They have NO `type` field (or type="custom"). Server-side tools
+  // (web_search_20250305, computer_20250124, etc.) carry a versioned type
+  // and must be dropped — DeepSeek can't handle them.
+  //
+  // Following cc-switch's approach: custom tools are wrapped as function
+  // tools with their input_schema passed through as parameters. Tool names
+  // are lowercased because some OpenAI-compatible upstreams reject uppercase.
   if (Array.isArray(payload.tools)) {
-    const ANTHROPIC_SERVER_TOOLS = new Set([
-      "web_search",
-      "computer",
-      "text_editor",
-      "bash",
+    const SERVER_TOOL_PREFIXES = [
+      "web_search", "computer", "text_editor", "bash_",
       "code_execution",
-    ]);
+    ];
     const tools = payload.tools
       .map((tool) => {
         if (!isRecord(tool)) return null;
-        // Server-side tools carry a type like "web_search_20250305" but no
-        // input_schema. Skip them — the upstream can't handle Anthropic-native
-        // tool types, and Claude Code handles tool absence gracefully.
         const toolType = typeof tool.type === "string" ? tool.type : "";
-        if (toolType && !toolType.startsWith("custom") && !isRecord(tool.input_schema)) {
-          return null;
+        const name = typeof tool.name === "string" ? tool.name : "";
+        // Drop server-side tools (versioned type, no input_schema).
+        if (toolType && !toolType.startsWith("custom")) {
+          if (!isRecord(tool.input_schema)) return null;
+          for (const prefix of SERVER_TOOL_PREFIXES) {
+            if (toolType.startsWith(prefix)) return null;
+          }
         }
-        // Also skip known server tool prefixes.
-        for (const serverTool of ANTHROPIC_SERVER_TOOLS) {
-          if (toolType.startsWith(serverTool)) return null;
-        }
+        if (!name) return null;
+        const schema = isRecord(tool.input_schema) ? tool.input_schema : {};
         return {
           type: "function",
           function: {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.input_schema ?? {},
+            name: name,
+            description: typeof tool.description === "string" ? tool.description : "",
+            parameters: schema,
           },
         } as Record<string, unknown> | null;
       })
@@ -485,16 +491,20 @@ export function openAIChatStreamToAnthropicStream(
           if (emittedToolStarts.has(idx)) continue;
           emittedToolStarts.add(idx);
           const blockIndex = textBlockStarted ? nextBlockIndex + 1 : nextBlockIndex;
-          let parsedInput: unknown = {};
-          try {
-            parsedInput = JSON.parse(tc.arguments || "{}");
-          } catch {
-            parsedInput = {};
-          }
+          // Anthropic streaming tool_use protocol:
+          // 1. content_block_start with EMPTY input ({}) — Claude Code expects
+          //    input to arrive via input_json_delta, not in the start event.
+          // 2. input_json_delta with the full arguments JSON.
+          // 3. content_block_stop.
           enqueue("content_block_start", {
             type: "content_block_start",
             index: blockIndex,
-            content_block: { type: "tool_use", id: tc.id, name: tc.name, input: parsedInput },
+            content_block: { type: "tool_use", id: tc.id, name: tc.name, input: {} },
+          });
+          enqueue("content_block_delta", {
+            type: "content_block_delta",
+            index: blockIndex,
+            delta: { type: "input_json_delta", partial_json: tc.arguments || "{}" },
           });
           enqueue("content_block_stop", {
             type: "content_block_stop",

@@ -142,6 +142,11 @@ function responsesInputToMessages(
   if (typeof payload.instructions === "string" && payload.instructions.trim()) {
     messages.push({ role: "system", content: payload.instructions });
   }
+
+  // Track pending tool_call ids so we can detect missing tool responses and
+  // backfill placeholders (DeepSeek rejects tool_calls without matching tool messages).
+  const pendingToolCallIds: string[] = [];
+
   for (const item of inputItems) {
     if (typeof item === "string") {
       messages.push({ role: "user", content: item });
@@ -149,20 +154,45 @@ function responsesInputToMessages(
     }
     if (!isRecord(item)) continue;
     if (item.type === "function_call_output") {
+      const callId = typeof item.call_id === "string" ? item.call_id : "";
       messages.push({
         role: "tool",
-        tool_call_id: item.call_id,
+        tool_call_id: callId,
         content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? ""),
       });
+      // Mark this call_id as resolved.
+      const idx = pendingToolCallIds.indexOf(callId);
+      if (idx >= 0) pendingToolCallIds.splice(idx, 1);
       continue;
     }
     if (item.type === "function_call") {
+      // Before adding a new assistant tool_calls message, backfill any
+      // unresolved tool responses from a previous tool_calls message.
+      // DeepSeek rejects "tool_calls must be followed by tool messages".
+      if (pendingToolCallIds.length > 0) {
+        for (const unresolvedId of pendingToolCallIds) {
+          messages.push({
+            role: "tool",
+            tool_call_id: unresolvedId,
+            content: "",
+          });
+        }
+        pendingToolCallIds.length = 0;
+      }
+
+      const callId = item.call_id ?? item.id ?? `call_${randomUUID()}`;
+      pendingToolCallIds.push(callId as string);
       messages.push({
         role: "assistant",
         content: null,
+        // DeepSeek reasoning models require every assistant message with
+        // tool_calls to carry a non-empty `reasoning_content`. Backfill a
+        // placeholder so the upstream doesn't reject the request.
+        // (cf. cc-switch ensure_tool_call_reasoning_content)
+        reasoning_content: "tool call",
         tool_calls: [
           {
-            id: item.call_id ?? item.id ?? `call_${randomUUID()}`,
+            id: callId,
             type: "function",
             function: {
               name: item.name,
@@ -182,6 +212,20 @@ function responsesInputToMessages(
       content: responsesContentToChatContent(item.content ?? item.text ?? ""),
     });
   }
+
+  // Backfill any trailing unresolved tool calls. DeepSeek rejects a request
+  // where the last assistant message has tool_calls but no matching tool
+  // responses follow it.
+  if (pendingToolCallIds.length > 0) {
+    for (const unresolvedId of pendingToolCallIds) {
+      messages.push({
+        role: "tool",
+        tool_call_id: unresolvedId,
+        content: "",
+      });
+    }
+  }
+
   return messages;
 }
 

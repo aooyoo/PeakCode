@@ -2622,15 +2622,15 @@ function SettingsRouteView() {
               <div>
                 <h4 className="mb-2 text-sm font-semibold text-foreground">Local API</h4>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  Listening on {resolveWsHttpUrl("/gateway/openai/v1")}
+                  Listening on {resolveWsHttpUrl("/gateway/openai/v1").replace(/\?token=.*/u, "")}
                 </p>
                 <div className="space-y-1">
                   {[
-                    { label: "Root", url: resolveWsHttpUrl("/gateway/openai/v1") },
-                    { label: "Chat", url: resolveWsHttpUrl("/gateway/openai/v1/chat/completions") },
-                    { label: "Models", url: resolveWsHttpUrl("/gateway/openai/v1/models") },
-                    { label: "Responses", url: resolveWsHttpUrl("/gateway/openai/v1/responses") },
-                    { label: "Anthropic", url: resolveWsHttpUrl("/gateway/anthropic/v1/messages") },
+                    { label: "Root", url: resolveWsHttpUrl("/gateway/openai/v1").replace(/\?token=.*/u, "") },
+                    { label: "Chat", url: resolveWsHttpUrl("/gateway/openai/v1/chat/completions").replace(/\?token=.*/u, "") },
+                    { label: "Models", url: resolveWsHttpUrl("/gateway/openai/v1/models").replace(/\?token=.*/u, "") },
+                    { label: "Responses", url: resolveWsHttpUrl("/gateway/openai/v1/responses").replace(/\?token=.*/u, "") },
+                    { label: "Anthropic", url: resolveWsHttpUrl("/gateway/anthropic").replace(/\?token=.*/u, "") },
                   ].map((ep) => (
                     <div
                       key={ep.label}
