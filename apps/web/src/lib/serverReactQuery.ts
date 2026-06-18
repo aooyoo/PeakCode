@@ -15,6 +15,9 @@ export const serverQueryKeys = {
     config: () => ["gateway", "config"] as const,
     secretStatus: () => ["gateway", "secrets"] as const,
   },
+  agent: {
+    configStatus: () => ["agent", "configStatus"] as const,
+  },
 };
 
 export function serverConfigQueryOptions() {
@@ -113,6 +116,17 @@ export function gatewaySecretStatusQueryOptions() {
     queryFn: async () => {
       const api = ensureNativeApi();
       return api.gateway.getSecretStatus();
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function agentConfigStatusQueryOptions() {
+  return queryOptions({
+    queryKey: serverQueryKeys.agent.configStatus(),
+    queryFn: async () => {
+      const api = ensureNativeApi();
+      return api.agent.getConfigStatus();
     },
     staleTime: 30_000,
   });

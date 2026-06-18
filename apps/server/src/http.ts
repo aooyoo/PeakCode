@@ -26,14 +26,19 @@ import { deriveAuthClientMetadata } from "./auth/utils";
 import { ServerConfig, type ServerConfigShape } from "./config";
 import {
   GATEWAY_ROUTE_PREFIX,
+  PEAKCODE_GATEWAY_CLIENT_API_KEY,
   gatewaySecretName,
   makeGatewayModelsPayload,
-  proxyGatewayChat,
-  responsesPayloadToChatPayload,
+  dispatchGatewayChat,
+  responsesPayloadToChatPayloadWithContext,
   chatResponseToResponsesResponse,
   chatStreamToResponsesStream,
   resolveGatewayChannel,
 } from "./gateway";
+import { dispatchAnthropicMessages } from "./anthropicAdapter";
+
+/** Anthropic Messages API mount point (Claude Code routes here via ANTHROPIC_BASE_URL). */
+const ANTHROPIC_GATEWAY_PREFIX = "/gateway/anthropic/v1";
 import { LOCAL_IMAGE_ROUTE_PATH, resolveAllowedLocalImageFile } from "./localImageFiles.ts";
 import type { ProjectFaviconResolverShape } from "./project/Services/ProjectFaviconResolver";
 import { ProjectFaviconResolver } from "./project/Services/ProjectFaviconResolver";
@@ -74,6 +79,7 @@ export function makeEffectHttpRouteLayer(readiness: ServerReadiness) {
     localImageEffectRouteLayer,
     attachmentsEffectRouteLayer,
     gatewayEffectRouteLayer,
+    anthropicGatewayEffectRouteLayer,
     staticAndDevEffectRouteLayer,
   );
 }
@@ -121,9 +127,51 @@ function gatewayErrorResponse(message: string, status: number) {
   );
 }
 
+function headerString(
+  headers: Record<string, string | readonly string[] | undefined>,
+  name: string,
+): string {
+  const lowerName = name.toLowerCase();
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === lowerName)?.[1];
+  if (Array.isArray(entry)) return entry[0] ?? "";
+  return entry ?? "";
+}
+
+function isLoopbackAddress(address: string | null | undefined): boolean {
+  if (!address) return false;
+  return (
+    address === "localhost" ||
+    address === "::1" ||
+    address.startsWith("127.") ||
+    address.startsWith("::ffff:127.")
+  );
+}
+
+export function isPeakCodeGatewaySentinelAuthorized(input: {
+  readonly headers: Record<string, string | readonly string[] | undefined>;
+  readonly remoteAddress: string | null | undefined;
+}): boolean {
+  if (!isLoopbackAddress(input.remoteAddress)) return false;
+  const authorization = headerString(input.headers, "authorization");
+  const bearer = authorization.replace(/^Bearer\s+/iu, "").trim();
+  const xApiKey = headerString(input.headers, "x-api-key").trim();
+  const anthropicApiKey = headerString(input.headers, "anthropic-api-key").trim();
+  return [bearer, xApiKey, anthropicApiKey].some(
+    (value) => value === PEAKCODE_GATEWAY_CLIENT_API_KEY,
+  );
+}
+
+function hasPeakCodeGatewaySentinelAccess(request: HttpServerRequest.HttpServerRequest): boolean {
+  return isPeakCodeGatewaySentinelAuthorized({
+    headers: request.headers,
+    remoteAddress: request.remoteAddress ?? null,
+  });
+}
+
 const requireGatewayRequestAccess = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const config = yield* ServerConfig;
+  if (hasPeakCodeGatewaySentinelAccess(request)) return;
   const url = HttpServerRequest.toURL(request);
   if (url && isLegacyTokenAuthorized({ config, url })) return;
   const serverAuth = yield* ServerAuth;
@@ -172,9 +220,33 @@ const gatewayEffectRouteLayer = HttpRouter.add(
     if (!upstream.enabled) {
       return gatewayErrorResponse(`Gateway channel '${upstream.id}' is disabled.`, 400);
     }
-    const apiKeyBytes = yield* secretStore.get(gatewaySecretName(upstream.id));
-    const apiKey = apiKeyBytes ? new TextDecoder().decode(apiKeyBytes).trim() : "";
-    if (!apiKey) {
+    if (!upstream.baseUrl || !model) {
+      return gatewayErrorResponse(
+        `Gateway channel '${upstream.id}' is missing a Base URL or model.`,
+        400,
+      );
+    }
+    // Load every secret slot the channel declares. Missing slots are simply
+    // omitted from the map; per-kind validation (e.g. MiMo needs all three
+    // cookies) happens inside the adapter.
+    const secretEntries = yield* Effect.all(
+      upstream.secrets.map((def) =>
+        secretStore.get(gatewaySecretName(upstream.id, def.id)).pipe(
+          Effect.map((bytes): [string, string] => [
+            def.id,
+            bytes ? new TextDecoder().decode(bytes).trim() : "",
+          ]),
+        ),
+      ),
+    );
+    const secrets: Record<string, string> = {};
+    for (const [secretId, value] of secretEntries) {
+      if (value) secrets[secretId] = value;
+    }
+    // Every channel needs at least its primary `apiKey` slot populated when
+    // talking to an OpenAI-compatible upstream. MiMo validates its own three
+    // cookies inside the adapter, so we only enforce the openai baseline here.
+    if (upstream.kind === "openai" && !secrets.apiKey) {
       return gatewayErrorResponse(
         `Gateway channel '${upstream.id}' has no API key configured.`,
         401,
@@ -183,14 +255,14 @@ const gatewayEffectRouteLayer = HttpRouter.add(
 
     try {
       if (isResponses) {
-        const chatPayload = responsesPayloadToChatPayload(payload);
+        const { chatPayload, contextInputItems } = responsesPayloadToChatPayloadWithContext(payload);
         chatPayload.model = model;
         const upstreamResponse = yield* Effect.tryPromise({
           try: () =>
-            proxyGatewayChat({
-              config: gatewayConfig,
-              payload: chatPayload as Record<string, unknown>,
-              apiKey,
+            dispatchGatewayChat({
+              channel: upstream,
+              chatPayload: chatPayload as Record<string, unknown>,
+              secrets,
             }),
           catch: (cause) => ({
             message: cause instanceof Error ? cause.message : "Gateway upstream request failed.",
@@ -198,9 +270,10 @@ const gatewayEffectRouteLayer = HttpRouter.add(
           }),
         });
         const response = upstreamResponse.headers.get("content-type")?.includes("text/event-stream")
-          ? chatStreamToResponsesStream(upstreamResponse, requestedModel)
+          ? chatStreamToResponsesStream(upstreamResponse, requestedModel, contextInputItems)
           : yield* Effect.tryPromise({
-              try: () => chatResponseToResponsesResponse(upstreamResponse, requestedModel),
+              try: () =>
+                chatResponseToResponsesResponse(upstreamResponse, requestedModel, contextInputItems),
               catch: () => ({
                 message: "Failed to convert gateway response.",
                 status: 502 as const,
@@ -211,10 +284,10 @@ const gatewayEffectRouteLayer = HttpRouter.add(
 
       const upstreamResponse = yield* Effect.tryPromise({
         try: () =>
-          proxyGatewayChat({
-            config: gatewayConfig,
-            payload: { ...payload, model } as Record<string, unknown>,
-            apiKey,
+          dispatchGatewayChat({
+            channel: upstream,
+            chatPayload: { ...payload, model } as Record<string, unknown>,
+            secrets,
           }),
         catch: (cause) => ({
           message: cause instanceof Error ? cause.message : "Gateway upstream request failed.",
@@ -223,6 +296,111 @@ const gatewayEffectRouteLayer = HttpRouter.add(
       });
 
       return HttpServerResponse.fromWeb(upstreamResponse);
+    } catch (error) {
+      return gatewayErrorResponse(
+        typeof (error as { message?: unknown }).message === "string"
+          ? (error as { message: string }).message
+          : "Gateway request failed.",
+        typeof (error as { status?: unknown }).status === "number"
+          ? (error as { status: number }).status
+          : 500,
+      );
+    }
+  }),
+);
+
+/**
+ * Anthropic Messages API route. Claude Code is redirected here via
+ * ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/gateway/anthropic/v1 and posts
+ * Anthropic-format requests to /v1/messages. The adapter converts the request
+ * to the channel's native protocol (openai chat, mimo, or anthropic passthrough)
+ * and converts the response back to Anthropic Messages format.
+ */
+const anthropicGatewayEffectRouteLayer = HttpRouter.add(
+  "*",
+  `${ANTHROPIC_GATEWAY_PREFIX}/*`,
+  Effect.gen(function* () {
+    yield* requireGatewayRequestAccess;
+
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const url = HttpServerRequest.toURL(request);
+    if (!url) return gatewayErrorResponse("Bad Request", 400);
+
+    const serverSettings = yield* ServerSettingsService;
+    const secretStore = yield* ServerSecretStore;
+    const gatewayConfig = (yield* serverSettings.getSettings).gateway;
+    if (!gatewayConfig.enabled) {
+      return gatewayErrorResponse("PeakCode gateway is disabled.", 503);
+    }
+
+    // count_tokens and any other sub-paths are not yet supported; Claude Code
+    // degrades gracefully when count_tokens 404s (it estimates locally).
+    if (url.pathname !== `${ANTHROPIC_GATEWAY_PREFIX}/messages`) {
+      return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+    if (request.method !== "POST") {
+      return HttpServerResponse.text("Method Not Allowed", { status: 405 });
+    }
+
+    const payload = yield* readEffectJson(request, "Invalid gateway request payload.").pipe(
+      Effect.mapError(() => ({ message: "Invalid JSON request body.", status: 400 as const })),
+    );
+    if (!isRecord(payload)) {
+      return gatewayErrorResponse("Request body must be a JSON object.", 400);
+    }
+
+    const requestedModel = typeof payload.model === "string" ? payload.model.trim() : null;
+    const { channel: upstream, model } = resolveGatewayChannel(gatewayConfig, requestedModel);
+    if (!upstream) {
+      return gatewayErrorResponse("No gateway channel is configured.", 400);
+    }
+    if (!upstream.enabled) {
+      return gatewayErrorResponse(`Gateway channel '${upstream.id}' is disabled.`, 400);
+    }
+    if (!upstream.baseUrl || !model) {
+      return gatewayErrorResponse(
+        `Gateway channel '${upstream.id}' is missing a Base URL or model.`,
+        400,
+      );
+    }
+
+    const secretEntries = yield* Effect.all(
+      upstream.secrets.map((def) =>
+        secretStore.get(gatewaySecretName(upstream.id, def.id)).pipe(
+          Effect.map((bytes): [string, string] => [
+            def.id,
+            bytes ? new TextDecoder().decode(bytes).trim() : "",
+          ]),
+        ),
+      ),
+    );
+    const secrets: Record<string, string> = {};
+    for (const [secretId, value] of secretEntries) {
+      if (value) secrets[secretId] = value;
+    }
+    // anthropic-passthrough and openai channels both need an apiKey; MiMo
+    // validates its cookies inside the adapter.
+    if (upstream.kind !== "mimo" && !secrets.apiKey) {
+      return gatewayErrorResponse(
+        `Gateway channel '${upstream.id}' has no API key configured.`,
+        401,
+      );
+    }
+
+    try {
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          dispatchAnthropicMessages({
+            channel: upstream,
+            payload: { ...payload, model },
+            secrets,
+          }),
+        catch: (cause) => ({
+          message: cause instanceof Error ? cause.message : "Gateway upstream request failed.",
+          status: 502 as const,
+        }),
+      });
+      return HttpServerResponse.fromWeb(response);
     } catch (error) {
       return gatewayErrorResponse(
         typeof (error as { message?: unknown }).message === "string"

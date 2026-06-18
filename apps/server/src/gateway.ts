@@ -1,11 +1,26 @@
 import { randomUUID } from "node:crypto";
 
-import type { GatewayChannelConfig, GatewayChannelId, GatewayConfig } from "@peakcode/contracts";
+import {
+  resolveChannelDefaultModel,
+  resolveChannelModels,
+  resolveGatewayActiveChannel,
+  type GatewayChannelConfig,
+  type GatewayChannelId,
+  type GatewayConfig,
+} from "@peakcode/contracts";
+
+import { mimoMissingSecrets, sendMimoChat } from "./mimoAdapter";
 
 export const GATEWAY_ROUTE_PREFIX = "/gateway/openai/v1";
+export const PEAKCODE_GATEWAY_CLIENT_API_KEY = "peakcode-managed";
 
-export function gatewaySecretName(channelId: GatewayChannelId): string {
-  return `gateway.channel.${channelId}.apiKey`;
+/**
+ * Secret-store key for one slot of a channel. Each channel declares its own
+ * secret slots (see GatewayChannelSecretDef); this helper namespaces them so a
+ * multi-secret channel (e.g. MiMo's three cookies) does not collide.
+ */
+export function gatewaySecretName(channelId: GatewayChannelId, secretId: string): string {
+  return `gateway.channel.${channelId}.secret.${secretId}`;
 }
 
 export function resolveGatewayChannel(
@@ -14,14 +29,14 @@ export function resolveGatewayChannel(
 ): { channel: GatewayChannelConfig | null; model: string | null } {
   const slashIndex = requestedModel?.indexOf("/") ?? -1;
   const requestedChannelId = slashIndex > 0 ? requestedModel?.slice(0, slashIndex) : null;
-  const channelId = config.channels.some((channel) => channel.id === requestedChannelId)
-    ? requestedChannelId
-    : config.activeChannelId;
-  const channel = config.channels.find((candidate) => candidate.id === channelId) ?? null;
+  const activeChannel = resolveGatewayActiveChannel(config);
+  const channel = config.channels.some((candidate) => candidate.id === requestedChannelId)
+    ? (config.channels.find((candidate) => candidate.id === requestedChannelId) ?? null)
+    : activeChannel;
   const model =
-    requestedModel && requestedChannelId === channelId
+    requestedModel && requestedChannelId === channel?.id
       ? requestedModel.slice(slashIndex + 1)
-      : requestedModel || channel?.model || null;
+      : requestedModel || (channel ? resolveChannelDefaultModel(channel) : null);
   return { channel, model };
 }
 
@@ -29,15 +44,13 @@ export function makeGatewayModelsPayload(config: GatewayConfig) {
   return {
     object: "list",
     data: config.channels.flatMap((channel) =>
-      channel.enabled && channel.baseUrl && channel.model
-        ? [
-            {
-              id: `${channel.id}/${channel.model}`,
-              object: "model",
-              created: 0,
-              owned_by: channel.id,
-            },
-          ]
+      channel.enabled && channel.baseUrl
+        ? resolveChannelModels(channel).map((model) => ({
+            id: `${channel.id}/${model.id}`,
+            object: "model",
+            created: 0,
+            owned_by: channel.id,
+          }))
         : [],
     ),
   };
@@ -45,6 +58,36 @@ export function makeGatewayModelsPayload(config: GatewayConfig) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const RESPONSE_CONTEXT_LIMIT = 512;
+const responseContextStore = new Map<string, unknown[]>();
+
+function rememberResponseContext(
+  responseId: string,
+  contextInputItems: readonly unknown[] | undefined,
+  outputItems: readonly unknown[],
+) {
+  if (!contextInputItems) return;
+  responseContextStore.set(responseId, [...contextInputItems, ...outputItems]);
+  while (responseContextStore.size > RESPONSE_CONTEXT_LIMIT) {
+    const oldestKey = responseContextStore.keys().next().value;
+    if (!oldestKey) break;
+    responseContextStore.delete(oldestKey);
+  }
+}
+
+function responseInputItems(payload: Record<string, unknown>): unknown[] {
+  if (payload.input === undefined || payload.input === null) return [];
+  return Array.isArray(payload.input) ? [...payload.input] : [payload.input];
+}
+
+function responseContextInputItems(payload: Record<string, unknown>): unknown[] {
+  const inputItems = responseInputItems(payload);
+  const previousId =
+    typeof payload.previous_response_id === "string" ? payload.previous_response_id.trim() : "";
+  if (!previousId) return inputItems;
+  return [...(responseContextStore.get(previousId) ?? []), ...inputItems];
 }
 
 function joinUrl(baseUrl: string, suffix: string): string {
@@ -63,13 +106,43 @@ function textFromContent(content: unknown): string {
     .join("\n");
 }
 
-function responsesInputToMessages(payload: Record<string, unknown>): Record<string, unknown>[] {
+function responsesContentToChatContent(content: unknown): unknown {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return content ?? "";
+
+  const parts: Array<
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } }
+  > = content.flatMap((part) => {
+    if (!isRecord(part)) return [];
+    if (
+      (part.type === "input_text" || part.type === "output_text" || part.type === "text") &&
+      typeof part.text === "string"
+    ) {
+      return [{ type: "text", text: part.text }];
+    }
+    if (part.type === "input_image" && typeof part.image_url === "string") {
+      return [{ type: "image_url", image_url: { url: part.image_url } }];
+    }
+    return [];
+  });
+
+  if (parts.length === 0) return "";
+  if (parts.every((part) => part.type === "text")) {
+    return parts.map((part) => part.text).join("\n");
+  }
+  return parts;
+}
+
+function responsesInputToMessages(
+  payload: Record<string, unknown>,
+  inputItems: readonly unknown[] = responseContextInputItems(payload),
+): Record<string, unknown>[] {
   const messages: Record<string, unknown>[] = [];
   if (typeof payload.instructions === "string" && payload.instructions.trim()) {
     messages.push({ role: "system", content: payload.instructions });
   }
-  const input = Array.isArray(payload.input) ? payload.input : [payload.input];
-  for (const item of input) {
+  for (const item of inputItems) {
     if (typeof item === "string") {
       messages.push({ role: "user", content: item });
       continue;
@@ -104,7 +177,10 @@ function responsesInputToMessages(payload: Record<string, unknown>): Record<stri
       continue;
     }
     const role = item.role === "developer" ? "system" : (item.role ?? "user");
-    messages.push({ role, content: item.content ?? item.text ?? "" });
+    messages.push({
+      role,
+      content: responsesContentToChatContent(item.content ?? item.text ?? ""),
+    });
   }
   return messages;
 }
@@ -131,9 +207,16 @@ function responsesToolsToChatTools(tools: unknown): unknown {
 export function responsesPayloadToChatPayload(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
+  return responsesPayloadToChatPayloadWithContext(payload).chatPayload;
+}
+
+export function responsesPayloadToChatPayloadWithContext(
+  payload: Record<string, unknown>,
+): { chatPayload: Record<string, unknown>; contextInputItems: unknown[] } {
+  const contextInputItems = responseContextInputItems(payload);
   const result: Record<string, unknown> = {
     model: payload.model,
-    messages: responsesInputToMessages(payload),
+    messages: responsesInputToMessages(payload, contextInputItems),
     stream: payload.stream === true,
   };
   const tools = responsesToolsToChatTools(payload.tools);
@@ -142,7 +225,7 @@ export function responsesPayloadToChatPayload(
   if (payload.temperature !== undefined) result.temperature = payload.temperature;
   if (payload.top_p !== undefined) result.top_p = payload.top_p;
   if (payload.max_output_tokens !== undefined) result.max_tokens = payload.max_output_tokens;
-  return result;
+  return { chatPayload: result, contextInputItems };
 }
 
 export async function proxyGatewayChat(input: {
@@ -194,6 +277,7 @@ function chatToolCallsToResponseItems(toolCalls: unknown): unknown[] {
 export async function chatResponseToResponsesResponse(
   response: Response,
   requestedModel: unknown,
+  contextInputItems?: readonly unknown[],
 ): Promise<Response> {
   const payload = (await response.json()) as unknown;
   if (!response.ok || !isRecord(payload))
@@ -213,9 +297,11 @@ export async function chatResponseToResponsesResponse(
     });
   }
   if (message) output.push(...chatToolCallsToResponseItems(message.tool_calls));
+  const responseId = typeof payload.id === "string" ? payload.id : `resp_${randomUUID()}`;
+  rememberResponseContext(responseId, contextInputItems, output);
   return Response.json(
     {
-      id: typeof payload.id === "string" ? payload.id : `resp_${randomUUID()}`,
+      id: responseId,
       object: "response",
       created_at:
         typeof payload.created === "number" ? payload.created : Math.floor(Date.now() / 1000),
@@ -232,7 +318,11 @@ function sse(event: Record<string, unknown>): string {
   return `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
-export function chatStreamToResponsesStream(response: Response, requestedModel: unknown): Response {
+export function chatStreamToResponsesStream(
+  response: Response,
+  requestedModel: unknown,
+  contextInputItems?: readonly unknown[],
+): Response {
   if (!response.body) {
     return Response.json(
       { error: { type: "peakcode_gateway_error", message: "Upstream returned an empty stream." } },
@@ -419,6 +509,28 @@ export function chatStreamToResponsesStream(response: Response, requestedModel: 
             },
           });
         }
+        const output = [
+          ...(messageStarted
+            ? [
+                {
+                  id: messageId,
+                  type: "message",
+                  status: "completed",
+                  role: "assistant",
+                  content: [{ type: "output_text", text, annotations: [] }],
+                },
+              ]
+            : []),
+          ...Array.from(toolCalls.values()).map((toolCall) => ({
+            id: toolCall.id,
+            type: "function_call",
+            status: "completed",
+            call_id: toolCall.callId,
+            name: toolCall.name,
+            arguments: toolCall.arguments,
+          })),
+        ];
+        rememberResponseContext(responseId, contextInputItems, output);
         send({
           type: "response.completed",
           response: {
@@ -426,27 +538,7 @@ export function chatStreamToResponsesStream(response: Response, requestedModel: 
             object: "response",
             status: "completed",
             model: requestedModel,
-            output: [
-              ...(messageStarted
-                ? [
-                    {
-                      id: messageId,
-                      type: "message",
-                      status: "completed",
-                      role: "assistant",
-                      content: [{ type: "output_text", text, annotations: [] }],
-                    },
-                  ]
-                : []),
-              ...Array.from(toolCalls.values()).map((toolCall) => ({
-                id: toolCall.id,
-                type: "function_call",
-                status: "completed",
-                call_id: toolCall.callId,
-                name: toolCall.name,
-                arguments: toolCall.arguments,
-              })),
-            ],
+            output,
           },
         });
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
@@ -466,4 +558,90 @@ export function chatStreamToResponsesStream(response: Response, requestedModel: 
       Connection: "keep-alive",
     },
   });
+}
+
+// ------------------------------------------------------------------
+// Channel-adapter dispatcher
+// ------------------------------------------------------------------
+// Routes a normalized OpenAI chat/completions payload to the right upstream
+// protocol handler based on the resolved channel `kind`. `openai` channels
+// (DeepSeek, Kimi, ...) forward the payload verbatim; `mimo` channels
+// translate to/from Xiaomi MiMo's private protocol (see mimoAdapter.ts).
+//
+// The dispatcher always returns an OpenAI-shaped chat/completions Response
+// (stream or JSON), so the /responses route can uniformly feed it into the
+// existing chat<->responses converters above.
+
+export interface GatewayChatRequest {
+  /** The resolved upstream channel. The caller has already done model routing. */
+  readonly channel: GatewayChannelConfig;
+  /**
+   * OpenAI chat/completions payload. `model` is the resolved upstream model
+   * (channel prefix already stripped by resolveGatewayChannel).
+   */
+  readonly chatPayload: Record<string, unknown>;
+  /** Resolved secret values keyed by secret id; missing slots are omitted. */
+  readonly secrets: Readonly<Record<string, string>>;
+  readonly signal?: AbortSignal | null;
+}
+
+async function sendOpenaiChat(request: GatewayChatRequest): Promise<Response> {
+  // proxyGatewayChat re-resolves the channel from `config`; we already have a
+  // single resolved channel, so pass a one-channel config and re-stamp the
+  // model to the resolved value to keep the upstream body shape stable.
+  return proxyGatewayChat({
+    config: {
+      enabled: true,
+      activeChannelId: request.channel.id,
+      channels: [request.channel],
+    },
+    payload: request.chatPayload,
+    apiKey: request.secrets.apiKey ?? "",
+    signal: request.signal ?? null,
+  });
+}
+
+async function sendMimoChatRequest(request: GatewayChatRequest): Promise<Response> {
+  const missing = mimoMissingSecrets(request.secrets);
+  if (missing.length > 0) {
+    return Response.json(
+      {
+        error: {
+          type: "peakcode_gateway_error",
+          message: `MiMo channel '${request.channel.id}' is missing required secrets: ${missing.join(", ")}.`,
+        },
+      },
+      { status: 401 },
+    );
+  }
+  return sendMimoChat({
+    baseUrl: request.channel.baseUrl,
+    chatPayload: request.chatPayload,
+    secrets: request.secrets,
+    signal: request.signal ?? null,
+  });
+}
+
+/**
+ * Dispatches a gateway chat request to the adapter matching the channel kind.
+ * Throws for unknown kinds (unreachable while `kind` stays a closed literal);
+ * callers should treat a throw as a 500.
+ */
+export function dispatchGatewayChat(request: GatewayChatRequest): Promise<Response> {
+  switch (request.channel.kind) {
+    case "openai":
+      return sendOpenaiChat(request);
+    case "mimo":
+      return sendMimoChatRequest(request);
+    case "anthropic":
+      // Anthropic-native channels speak the Messages API, not OpenAI Chat.
+      // Callers must route them through dispatchAnthropicMessages instead.
+      throw new Error(
+        "Anthropic-native channels cannot be dispatched via the OpenAI Chat path; use /gateway/anthropic/v1/messages.",
+      );
+    default: {
+      const exhaustive: never = request.channel.kind;
+      throw new Error(`Unsupported gateway channel kind: ${String(exhaustive)}`);
+    }
+  }
 }

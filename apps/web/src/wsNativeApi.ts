@@ -807,6 +807,10 @@ export function createWsNativeApi(): NativeApi {
       setApiKey: (input) => transport.request(WS_METHODS.gatewaySetApiKey, input),
       removeApiKey: (input) => transport.request(WS_METHODS.gatewayRemoveApiKey, input),
     },
+    agent: {
+      installConfig: (input) => transport.request(WS_METHODS.agentInstallConfig, input),
+      getConfigStatus: () => transport.request(WS_METHODS.agentGetConfigStatus, {}),
+    },
   };
 
   instance = { api, transport };

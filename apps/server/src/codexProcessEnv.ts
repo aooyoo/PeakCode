@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-import type { GatewayConfig } from "@peakcode/contracts";
+import { resolveAgentModel, resolveGatewayActiveChannel, type GatewayConfig } from "@peakcode/contracts";
 
 import { readActiveCodexProviderEnvKey } from "@peakcode/shared/codexConfig";
 import {
@@ -41,6 +41,7 @@ const PEAKCODE_BROWSER_PLUGIN_CONFIG_HEADER = '[plugins."peakcode-browser@local"
 // provider, e.g. DeepSeek) instead of requiring per-tool configuration.
 const PEAKCODE_GATEWAY_PROVIDER_ID = "peakcode-gateway";
 const PEAKCODE_GATEWAY_PROVIDER_HEADER = "[model_providers.peakcode-gateway]";
+const PEAKCODE_GATEWAY_PROVIDER_AUTH_HEADER = "[model_providers.peakcode-gateway.auth]";
 const PEAKCODE_GATEWAY_MODEL_PROVIDER_LINE = `model_provider = "${PEAKCODE_GATEWAY_PROVIDER_ID}"`;
 // Codex reads the API key from this env var, but the gateway authenticates
 // against the upstream itself using its own stored secret. The env var only
@@ -49,6 +50,15 @@ const PEAKCODE_GATEWAY_ENV_KEY = "PEAKCODE_GATEWAY_API_KEY";
 // Sentinel value injected for PEAKCODE_GATEWAY_ENV_KEY so Codex starts the
 // provider; the real upstream key lives in the gateway's secret store.
 const PEAKCODE_GATEWAY_ENV_SENTINEL = "peakcode-managed";
+
+// Top-level `model` injection. When the gateway is active we also pin Codex's
+// model to the active channel's Codex-mapped model (or the channel default),
+// so Codex sends the right model id to the gateway on every turn. The user's
+// original `model` line is stashed for restore, mirroring model_provider.
+const PEAKCODE_GATEWAY_ORIGINAL_MODEL_MARKER = "# peakcode-gateway-original-model";
+const PEAKCODE_GATEWAY_ORIGINAL_MODEL_REGEX = new RegExp(
+  `^${PEAKCODE_GATEWAY_ORIGINAL_MODEL_MARKER}\\s*=\\s*(?:"([^"]*)"|'([^']*)')\\s*$`,
+);
 
 /**
  * Resolves the local gateway base URL Codex should talk to.
@@ -67,6 +77,7 @@ const PEAKCODE_GATEWAY_ORIGINAL_REGEX = new RegExp(
   `^${PEAKCODE_GATEWAY_ORIGINAL_MARKER}\\s*=\\s*(?:"([^"]*)"|'([^']*)')\\s*$`,
 );
 const MODEL_PROVIDER_LINE_REGEX = /^\s*model_provider\s*=\s*(?:"([^"]+)"|'([^']+)')\s*$/;
+const MODEL_LINE_REGEX = /^\s*model\s*=\s*(?:"([^"]+)"|'([^']+)')\s*$/;
 const MODEL_PROVIDERS_SECTION_REGEX =
   /^\[\s*model_providers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*\]$/;
 
@@ -148,40 +159,58 @@ function shouldApplyGatewayOverlay(gateway: GatewayConfig | undefined): gateway 
  * When `gateway.enabled` is true:
  *   - Sets the top-level `model_provider` to `"peakcode-gateway"`, stashing the
  *     previous value in a comment so it can be restored later.
+ *   - Pins the top-level `model` to the active channel's Codex-mapped model
+ *     (or the channel default), stashing the user's original for restore.
  *   - Replaces any existing `[model_providers.peakcode-gateway]` section with a
  *     fresh one pointing at the local gateway endpoint.
  *
  * When `gateway.enabled` is false:
  *   - Removes the `peakcode-gateway` section entirely.
- *   - Restores the stashed original `model_provider` value, or removes the line
- *     if no original existed (i.e. PeakCode added it from scratch).
+ *   - Restores the stashed original `model_provider` and `model` values, or
+ *     removes the lines if no original existed.
  *
  * This is a pure string transform; callers write the result into the overlay
  * config.toml alongside the browser-plugin overlay.
  */
 export function injectGatewayProviderIntoCodexConfig(
   config: string,
-  options: { readonly gateway: GatewayConfig; readonly port: number },
+  options: {
+    readonly gateway: GatewayConfig;
+    readonly port: number;
+    readonly authMode?: "env" | "command";
+  },
 ): string {
   const enabled = options.gateway.enabled;
   const baseUrl = buildGatewayBaseUrl(options.port);
+  const authMode = options.authMode ?? "env";
   const lines = config.split(/\r?\n/);
 
   // Pass 1: strip every line that belongs to a previous peakcode-gateway overlay
-  // (the section body) and capture the original model_provider value, while also
-  // removing our injected top-level model_provider line when disabling.
+  // (the section body) and capture the original model_provider + model values,
+  // while also removing our injected top-level lines when disabling.
   let originalModelProvider: string | undefined;
+  let originalModel: string | undefined;
   let inGatewaySection = false;
   const stripped: string[] = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
 
-    // Restore-marker comment: capture the stashed original in either mode.
+    // Restore-marker comments: capture the stashed originals in either mode.
     const markerMatch = trimmed.match(PEAKCODE_GATEWAY_ORIGINAL_REGEX);
     if (markerMatch) {
       originalModelProvider = markerMatch[1] ?? markerMatch[2] ?? originalModelProvider;
       continue; // drop the marker line; re-added below when enabling
+    }
+    const modelMarkerMatch = trimmed.match(PEAKCODE_GATEWAY_ORIGINAL_MODEL_REGEX);
+    if (modelMarkerMatch) {
+      originalModel = modelMarkerMatch[1] ?? modelMarkerMatch[2] ?? originalModel;
+      continue;
+    }
+
+    if (trimmed === PEAKCODE_GATEWAY_PROVIDER_AUTH_HEADER) {
+      inGatewaySection = true;
+      continue;
     }
 
     // Section header tracking.
@@ -228,6 +257,21 @@ export function injectGatewayProviderIntoCodexConfig(
       continue;
     }
 
+    // Top-level model line handling (mirrors model_provider). When enabling we
+    // pin the model to the gateway-resolved Codex model, stashing the user's
+    // original for restore. When disabling we keep the user's line untouched.
+    const modelMatch = trimmed.match(MODEL_LINE_REGEX);
+    if (modelMatch) {
+      if (enabled) {
+        if (originalModel === undefined) {
+          originalModel = modelMatch[1] ?? modelMatch[2];
+        }
+        continue; // drop; re-injected as the gateway model below
+      }
+      stripped.push(line);
+      continue;
+    }
+
     stripped.push(line);
   }
 
@@ -248,6 +292,23 @@ export function injectGatewayProviderIntoCodexConfig(
   if (originalModelProvider !== undefined) {
     withProviderHeader.push(`${PEAKCODE_GATEWAY_ORIGINAL_MARKER} = "${originalModelProvider}"`);
   }
+
+  // Pin the model to the active channel's Codex-mapped model so Codex sends
+  // the right model id through the gateway. The restore marker preserves the
+  // user's original model for when the gateway is turned back off.
+  const activeChannel = resolveGatewayActiveChannel(options.gateway);
+  const codexModel =
+    (activeChannel ? resolveAgentModel(activeChannel, "codex") : null) ?? originalModel;
+  if (codexModel) {
+    withProviderHeader.push(`model = "${codexModel}"`);
+    if (originalModel !== undefined && originalModel !== codexModel) {
+      withProviderHeader.push(`${PEAKCODE_GATEWAY_ORIGINAL_MODEL_MARKER} = "${originalModel}"`);
+    }
+  } else if (originalModel !== undefined) {
+    // No channel model resolved; keep the user's original model line.
+    withProviderHeader.push(`model = "${originalModel}"`);
+  }
+
   // Drop leading blank lines from stripped so the provider block stays compact
   // and the output is stable across repeated invocations (idempotency).
   let firstNonBlank = 0;
@@ -269,8 +330,18 @@ export function injectGatewayProviderIntoCodexConfig(
     `name = "PeakCode Gateway"`,
     `base_url = "${baseUrl}"`,
     `wire_api = "responses"`,
-    `env_key = "${PEAKCODE_GATEWAY_ENV_KEY}"`,
   );
+  if (authMode === "command") {
+    withProviderHeader.push(
+      "",
+      PEAKCODE_GATEWAY_PROVIDER_AUTH_HEADER,
+      `command = "/bin/echo"`,
+      `args = ["${PEAKCODE_GATEWAY_ENV_SENTINEL}"]`,
+      `refresh_interval_ms = 300000`,
+    );
+  } else {
+    withProviderHeader.push(`env_key = "${PEAKCODE_GATEWAY_ENV_KEY}"`);
+  }
 
   return withProviderHeader.join("\n");
 }

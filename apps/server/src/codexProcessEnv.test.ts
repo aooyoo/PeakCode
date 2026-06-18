@@ -16,6 +16,10 @@ const enabledGateway: GatewayConfig = {
       baseUrl: "https://api.deepseek.com/v1",
       model: "deepseek-chat",
       enabled: true,
+      kind: "openai",
+      secrets: [{ id: "apiKey", label: "API Key", sensitive: true }],
+      models: [],
+      agentMappings: {},
     },
   ],
 };
@@ -41,6 +45,19 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
       assert.ok(result.includes('base_url = "http://127.0.0.1:3773/gateway/openai/v1"'));
       assert.ok(result.includes('wire_api = "responses"'));
       assert.ok(result.includes('env_key = "PEAKCODE_GATEWAY_API_KEY"'));
+    });
+
+    it("can inject command auth for durable user Codex config writes", () => {
+      const result = injectGatewayProviderIntoCodexConfig("", {
+        gateway: enabledGateway,
+        port: 3773,
+        authMode: "command",
+      });
+
+      assert.ok(result.includes("[model_providers.peakcode-gateway.auth]"));
+      assert.ok(result.includes('command = "/bin/echo"'));
+      assert.ok(result.includes('args = ["peakcode-managed"]'));
+      assert.ok(!result.includes('env_key = "PEAKCODE_GATEWAY_API_KEY"'));
     });
 
     it("stashes the user's original model_provider and replaces it", () => {
@@ -88,6 +105,21 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
         gateway: enabledGateway,
         port: 3773,
       });
+      assert.equal(twice, once);
+    });
+
+    it("command auth mode is idempotent", () => {
+      const once = injectGatewayProviderIntoCodexConfig("", {
+        gateway: enabledGateway,
+        port: 3773,
+        authMode: "command",
+      });
+      const twice = injectGatewayProviderIntoCodexConfig(once, {
+        gateway: enabledGateway,
+        port: 3773,
+        authMode: "command",
+      });
+
       assert.equal(twice, once);
     });
 

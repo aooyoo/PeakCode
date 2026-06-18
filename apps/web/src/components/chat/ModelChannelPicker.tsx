@@ -5,8 +5,8 @@
 //          gateway config via NativeApi.gateway.
 // Layer: Chat composer presentation
 
-import { memo, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { memo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "~/lib/utils";
 import {
   MenuGroup,
@@ -17,14 +17,20 @@ import {
   MenuSubTrigger,
 } from "../ui/menu";
 import { ChevronRightIcon } from "~/lib/icons";
-import { gatewayConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
-import { ensureNativeApi } from "~/nativeApi";
+import { gatewayConfigQueryOptions } from "~/lib/serverReactQuery";
 
 // ------------------------------------------------------------------
 // Data model
 // ------------------------------------------------------------------
 
-export type ModelChannelId = "deepseek" | "siliconflow" | "volcano" | "tongyi" | "kimi" | "minimax";
+export type ModelChannelId =
+  | "deepseek"
+  | "siliconflow"
+  | "volcano"
+  | "tongyi"
+  | "kimi"
+  | "minimax"
+  | "mimo";
 
 export type ModelChannel = {
   readonly id: ModelChannelId;
@@ -119,32 +125,37 @@ const CHANNELS: ReadonlyArray<ModelChannel> = [
       </svg>
     ),
   },
+  {
+    id: "mimo",
+    name: "小米 MiMo",
+    nameEn: "MiMo",
+    subtitle: "小米 · MiMo",
+    subtitleEn: "Xiaomi MiMo",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="shrink-0">
+        <rect width="24" height="24" rx="6" fill="#FF6900" />
+        <path
+          d="M8 8L12 13L16 8M8 16L12 11L16 16"
+          stroke="white"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
+  },
 ];
 
 // ------------------------------------------------------------------
 // Sub-components
 // ------------------------------------------------------------------
 
-function ChannelToggle({
-  enabled,
-  onChange,
-}: {
-  enabled: boolean;
-  onChange: (next: boolean) => void;
-}) {
+function ChannelStatus({ enabled }: { enabled: boolean }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onChange(!enabled);
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
+    <span
+      aria-label={enabled ? "已启用" : "未启用"}
       className={cn(
-        "relative ms-auto inline-flex h-[18px] w-8 shrink-0 cursor-pointer items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+        "relative ms-auto inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors",
         enabled ? "bg-[hsl(var(--primary))]" : "bg-muted-foreground/25",
       )}
     >
@@ -154,27 +165,22 @@ function ChannelToggle({
           enabled ? "translate-x-[13px]" : "translate-x-[2px]",
         )}
       />
-    </button>
+    </span>
   );
 }
 
 function ChannelListItem({
   channel,
   enabled,
-  onToggle,
-  disabled,
 }: {
   channel: ModelChannel;
   enabled: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
 }) {
   return (
     <div
       className={cn(
         "flex items-center gap-3 rounded-md px-2 py-2 transition-colors",
         "hover:bg-[var(--color-background-elevated-secondary)]",
-        disabled && "opacity-50",
       )}
     >
       {channel.icon}
@@ -182,7 +188,7 @@ function ChannelListItem({
         <span className="flex items-center gap-2 text-sm font-medium">{channel.name}</span>
         <span className="text-xs text-muted-foreground">{channel.subtitle}</span>
       </div>
-      <ChannelToggle enabled={enabled} onChange={onToggle} />
+      <ChannelStatus enabled={enabled} />
     </div>
   );
 }
@@ -192,31 +198,7 @@ function ChannelListItem({
 // ------------------------------------------------------------------
 
 export const ModelChannelSection = memo(function ModelChannelSection() {
-  const queryClient = useQueryClient();
   const gatewayConfigQuery = useQuery(gatewayConfigQueryOptions());
-
-  const updateChannelMutation = useMutation({
-    mutationFn: async (input: { channelId: ModelChannelId; enabled: boolean }) => {
-      const api = ensureNativeApi();
-      const current = gatewayConfigQuery.data;
-      if (!current) return undefined;
-      const channels = current.channels.map((ch) =>
-        ch.id === input.channelId ? { ...ch, enabled: input.enabled } : ch,
-      );
-      return api.gateway.updateConfig({ channels });
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.gateway.config() });
-    },
-  });
-
-  const toggleChannel = useCallback(
-    (id: ModelChannelId, next: boolean) => {
-      updateChannelMutation.mutate({ channelId: id, enabled: next });
-    },
-    [updateChannelMutation],
-  );
-
   const serverChannels = gatewayConfigQuery.data?.channels ?? [];
   const enabledCount = serverChannels.filter((ch) => ch.enabled).length;
   const totalCount = CHANNELS.length;
@@ -240,8 +222,6 @@ export const ModelChannelSection = memo(function ModelChannelSection() {
                 key={channel.id}
                 channel={channel}
                 enabled={isEnabled}
-                disabled={updateChannelMutation.isPending}
-                onToggle={() => toggleChannel(channel.id, !isEnabled)}
               />
             );
           })}

@@ -42,6 +42,8 @@ import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryS
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
+import type { AgentProvisionId } from "@peakcode/contracts";
+import { getAllAgentStatuses, installAgentConfig } from "./agentProvisioner";
 import { gatewaySecretName } from "./gateway";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { listLocalUserSkills } from "./localSkills";
@@ -345,6 +347,35 @@ export const makeWsRpcLayer = () =>
 
       const rpcEffect = <A, E, R>(effect: Effect.Effect<A, E, R>, fallbackMessage: string) =>
         effect.pipe(Effect.mapError((cause) => toWsRpcError(cause, fallbackMessage)));
+
+      /**
+       * Reads the populated-state of every secret slot declared across every
+       * gateway channel. Each channel may declare multiple slots (e.g. MiMo's
+       * three cookies), so this iterates channel × secretDef and reports
+       * `{channelId, secretId, hasApiKey}` per slot. Shared by the three
+       * gateway secret RPCs to avoid repeating the nested Effect.all.
+       */
+      const collectGatewaySecretStatus = () =>
+        serverSettings.getSettings.pipe(
+          Effect.flatMap((s) =>
+            Effect.all(
+              s.gateway.channels.flatMap((ch) =>
+                ch.secrets.map((def) =>
+                  secretStore.get(gatewaySecretName(ch.id, def.id)).pipe(
+                    Effect.map(
+                      (value): GatewaySecretStatusResult["secrets"][number] => ({
+                        channelId: ch.id,
+                        secretId: def.id,
+                        hasApiKey: value !== null && value.byteLength > 0,
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
+        );
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -742,73 +773,44 @@ export const makeWsRpcLayer = () =>
           ),
 
         [WS_METHODS.gatewayGetSecretStatus]: () =>
-          rpcEffect(
-            serverSettings.getSettings.pipe(
-              Effect.flatMap((s) =>
-                Effect.all(
-                  s.gateway.channels.map((ch) =>
-                    secretStore.get(gatewaySecretName(ch.id)).pipe(
-                      Effect.map((value): GatewaySecretStatusResult["secrets"][number] => ({
-                        channelId: ch.id,
-                        hasApiKey: value !== null && value.byteLength > 0,
-                      })),
-                    ),
-                  ),
-                ),
-              ),
-              Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
-            ),
-            "Failed to get gateway secret status",
-          ),
+          rpcEffect(collectGatewaySecretStatus(), "Failed to get gateway secret status"),
 
         [WS_METHODS.gatewaySetApiKey]: (input) =>
           rpcEffect(
             secretStore
-              .set(gatewaySecretName(input.channelId), new TextEncoder().encode(input.apiKey))
-              .pipe(
-                Effect.flatMap(() =>
-                  serverSettings.getSettings.pipe(
-                    Effect.flatMap((s) =>
-                      Effect.all(
-                        s.gateway.channels.map((ch) =>
-                          secretStore.get(gatewaySecretName(ch.id)).pipe(
-                            Effect.map((value) => ({
-                              channelId: ch.id,
-                              hasApiKey: value !== null && value.byteLength > 0,
-                            })),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
-                  ),
-                ),
-              ),
-            "Failed to set gateway API key",
+              .set(
+                gatewaySecretName(input.channelId, input.secretId),
+                new TextEncoder().encode(input.apiKey),
+              )
+              .pipe(Effect.flatMap(() => collectGatewaySecretStatus())),
+            "Failed to set gateway secret",
           ),
 
         [WS_METHODS.gatewayRemoveApiKey]: (input) =>
           rpcEffect(
-            secretStore.remove(gatewaySecretName(input.channelId)).pipe(
-              Effect.flatMap(() =>
-                serverSettings.getSettings.pipe(
-                  Effect.flatMap((s) =>
-                    Effect.all(
-                      s.gateway.channels.map((ch) =>
-                        secretStore.get(gatewaySecretName(ch.id)).pipe(
-                          Effect.map((value) => ({
-                            channelId: ch.id,
-                            hasApiKey: value !== null && value.byteLength > 0,
-                          })),
-                        ),
-                      ),
-                    ),
-                  ),
-                  Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
-                ),
-              ),
-            ),
-            "Failed to remove gateway API key",
+            secretStore
+              .remove(gatewaySecretName(input.channelId, input.secretId))
+              .pipe(Effect.flatMap(() => collectGatewaySecretStatus())),
+            "Failed to remove gateway secret",
+          ),
+        [WS_METHODS.agentGetConfigStatus]: () =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings;
+              const ctx = { gateway: settings.gateway, port: config.port };
+              return yield* getAllAgentStatuses(ctx);
+            }).pipe(Effect.map((agents) => ({ agents }))),
+            "Failed to read agent config status",
+          ),
+        [WS_METHODS.agentInstallConfig]: (input: { agent: AgentProvisionId }) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings;
+              const ctx = { gateway: settings.gateway, port: config.port };
+              yield* installAgentConfig(input.agent, ctx);
+              return yield* getAllAgentStatuses(ctx);
+            }).pipe(Effect.map((agents) => ({ agents }))),
+            "Failed to install agent config",
           ),
       });
     }),

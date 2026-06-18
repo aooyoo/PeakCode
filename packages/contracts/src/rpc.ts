@@ -46,6 +46,11 @@ import {
   GatewayRemoveApiKeyInput,
 } from "./gateway";
 import {
+  AgentInstallInput,
+  AgentInstallResult,
+  AgentProvisionStatusResult,
+} from "./agentProvision";
+import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationEvent,
@@ -580,6 +585,18 @@ export const WsGatewayRemoveApiKeyRpc = Rpc.make(WS_METHODS.gatewayRemoveApiKey,
   error: WsRpcError,
 });
 
+export const WsAgentInstallConfigRpc = Rpc.make(WS_METHODS.agentInstallConfig, {
+  payload: AgentInstallInput,
+  success: AgentInstallResult,
+  error: WsRpcError,
+});
+
+export const WsAgentGetConfigStatusRpc = Rpc.make(WS_METHODS.agentGetConfigStatus, {
+  payload: Schema.Struct({}),
+  success: AgentProvisionStatusResult,
+  error: WsRpcError,
+});
+
 export const WsProviderListPluginsRpc = Rpc.make(WS_METHODS.providerListPlugins, {
   payload: ProviderListPluginsInput,
   success: ProviderListPluginsResult,
@@ -679,4 +696,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsGatewayGetSecretStatusRpc,
   WsGatewaySetApiKeyRpc,
   WsGatewayRemoveApiKeyRpc,
+  WsAgentInstallConfigRpc,
+  WsAgentGetConfigStatusRpc,
 );

@@ -58,6 +58,11 @@ import {
   ProjectSearchLocalEntriesInput,
   ProjectWriteFileInput,
 } from "./project";
+import {
+  AgentInstallInput,
+  AgentInstallResult,
+  AgentProvisionStatusResult,
+} from "./agentProvision";
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
 import {
@@ -171,6 +176,9 @@ export const WS_METHODS = {
   gatewayGetSecretStatus: "gateway.getSecretStatus",
   gatewaySetApiKey: "gateway.setApiKey",
   gatewayRemoveApiKey: "gateway.removeApiKey",
+  // Agent provisioning — write gateway config into local agent config files.
+  agentInstallConfig: "agent.installConfig",
+  agentGetConfigStatus: "agent.getConfigStatus",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -286,6 +294,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.gatewayGetSecretStatus, Schema.Struct({})),
   tagRequestBody(WS_METHODS.gatewaySetApiKey, GatewaySetApiKeyInput),
   tagRequestBody(WS_METHODS.gatewayRemoveApiKey, GatewayRemoveApiKeyInput),
+  // Agent provisioning
+  tagRequestBody(WS_METHODS.agentInstallConfig, AgentInstallInput),
+  tagRequestBody(WS_METHODS.agentGetConfigStatus, Schema.Struct({})),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
