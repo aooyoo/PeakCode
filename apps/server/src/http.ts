@@ -333,8 +333,43 @@ const anthropicGatewayEffectRouteLayer = HttpRouter.add(
       return gatewayErrorResponse("PeakCode gateway is disabled.", 503);
     }
 
-    // count_tokens and any other sub-paths are not yet supported; Claude Code
-    // degrades gracefully when count_tokens 404s (it estimates locally).
+    // Return the channel's real models in Anthropic's /v1/models shape so
+    // Claude Code shows the actual upstream model (e.g. "deepseek-chat") and
+    // its startup probe passes. The gateway routes by channel config, so the
+    // model id the SDK picks here is what gets forwarded upstream.
+    if (request.method === "GET" && url.pathname === `${ANTHROPIC_GATEWAY_PREFIX}/models`) {
+      const activeChannel = gatewayConfig.channels.find(
+        (ch) => ch.id === gatewayConfig.activeChannelId,
+      );
+      const modelList = activeChannel
+        ? (activeChannel.models.length > 0
+            ? activeChannel.models
+            : [{ id: activeChannel.model, label: activeChannel.model }]
+          ).map((m) => ({
+            type: "model" as const,
+            id: m.id,
+            display_name: m.label,
+            created_at: "2025-01-01T00:00:00Z",
+          }))
+        : [];
+      return HttpServerResponse.jsonUnsafe({ data: modelList });
+    }
+
+    // Claude Code calls /messages/count_tokens during startup to estimate
+    // token usage. Return a rough estimate so it doesn't think the model is
+    // unavailable. A precise count would require an upstream round-trip.
+    if (url.pathname === `${ANTHROPIC_GATEWAY_PREFIX}/messages/count_tokens`) {
+      const body = yield* readEffectJson(request, "Invalid count_tokens body.").pipe(
+        Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
+      );
+      const messages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
+      const system = isRecord(body) && typeof body.system === "string" ? body.system : "";
+      const inputTokens = Math.ceil(
+        (system.length + JSON.stringify(messages).length) / 4,
+      );
+      return HttpServerResponse.jsonUnsafe({ input_tokens: Math.max(inputTokens, 1) });
+    }
+
     if (url.pathname !== `${ANTHROPIC_GATEWAY_PREFIX}/messages`) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }

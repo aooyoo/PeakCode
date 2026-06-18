@@ -43,7 +43,7 @@ import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegi
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
 import type { AgentProvisionId } from "@peakcode/contracts";
-import { getAllAgentStatuses, installAgentConfig } from "./agentProvisioner";
+import { getAllAgentStatuses, installAgentConfig, type AgentProvisionContext } from "./agentProvisioner";
 import { gatewaySecretName } from "./gateway";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { listLocalUserSkills } from "./localSkills";
@@ -376,6 +376,42 @@ export const makeWsRpcLayer = () =>
           ),
           Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
         );
+
+      /**
+       * Re-writes the gateway config into every agent that is already
+       * installed. Called after any gateway config/secret change so the agent
+       * files stay in sync without the user having to click "写入" again.
+       *
+       * Failures are swallowed (Effect.catchAll → Effect.void) because a
+       * missing/locked agent file must not block the gateway update itself —
+       * the user will see stale status in the Agent Setup panel and can
+       * re-install manually.
+       */
+      const syncInstalledAgents = () =>
+        Effect.gen(function* () {
+          const settings = yield* serverSettings.getSettings;
+          const ctx: AgentProvisionContext = {
+            gateway: settings.gateway,
+            port: config.port,
+            env: process.env,
+          };
+          const statuses = yield* getAllAgentStatuses(ctx);
+          // Only re-write agents that were previously installed — we don't
+          // want to surprise-install into agents the user hasn't opted into.
+          const installed = statuses.filter((s) => s.installed);
+          if (installed.length === 0) return;
+          yield* Effect.all(
+            installed.map((s) =>
+              installAgentConfig(s.id, ctx).pipe(
+                // Best-effort: a failed re-sync (locked file, permission, etc.)
+                // must not break the gateway update. The stale status shows up
+                // in the Agent Setup panel and the user can re-install manually.
+                Effect.orElseSucceed(() => undefined),
+              ),
+            ),
+            { concurrency: "unbounded" },
+          );
+        });
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -768,7 +804,17 @@ export const makeWsRpcLayer = () =>
 
         [WS_METHODS.gatewayUpdateConfig]: (patch) =>
           rpcEffect(
-            serverSettings.updateSettings({ gateway: patch }).pipe(Effect.map((s) => s.gateway)),
+            serverSettings
+              .updateSettings({ gateway: patch })
+              .pipe(
+                Effect.tap(() =>
+                  // After saving the new gateway config, re-sync it into every
+                  // already-installed agent so their local config files reflect
+                  // the change immediately. Best-effort: failures are swallowed.
+                  syncInstalledAgents(),
+                ),
+                Effect.map((s) => s.gateway),
+              ),
             "Failed to update gateway config",
           ),
 
@@ -782,7 +828,10 @@ export const makeWsRpcLayer = () =>
                 gatewaySecretName(input.channelId, input.secretId),
                 new TextEncoder().encode(input.apiKey),
               )
-              .pipe(Effect.flatMap(() => collectGatewaySecretStatus())),
+              .pipe(
+                Effect.tap(() => syncInstalledAgents()),
+                Effect.flatMap(() => collectGatewaySecretStatus()),
+              ),
             "Failed to set gateway secret",
           ),
 
@@ -790,7 +839,10 @@ export const makeWsRpcLayer = () =>
           rpcEffect(
             secretStore
               .remove(gatewaySecretName(input.channelId, input.secretId))
-              .pipe(Effect.flatMap(() => collectGatewaySecretStatus())),
+              .pipe(
+                Effect.tap(() => syncInstalledAgents()),
+                Effect.flatMap(() => collectGatewaySecretStatus()),
+              ),
             "Failed to remove gateway secret",
           ),
         [WS_METHODS.agentGetConfigStatus]: () =>

@@ -40,8 +40,8 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
         gateway: enabledGateway,
         port: 3773,
       });
-      assert.ok(result.includes('model_provider = "peakcode-gateway"'));
-      assert.ok(result.includes("[model_providers.peakcode-gateway]"));
+      assert.ok(result.includes('model_provider = "peakcode"'));
+      assert.ok(result.includes("[model_providers.peakcode]"));
       assert.ok(result.includes('base_url = "http://127.0.0.1:3773/gateway/openai/v1"'));
       assert.ok(result.includes('wire_api = "responses"'));
       assert.ok(result.includes('env_key = "PEAKCODE_GATEWAY_API_KEY"'));
@@ -54,7 +54,7 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
         authMode: "command",
       });
 
-      assert.ok(result.includes("[model_providers.peakcode-gateway.auth]"));
+      assert.ok(result.includes("[model_providers.peakcode.auth]"));
       assert.ok(result.includes('command = "/bin/echo"'));
       assert.ok(result.includes('args = ["peakcode-managed"]'));
       assert.ok(!result.includes('env_key = "PEAKCODE_GATEWAY_API_KEY"'));
@@ -66,8 +66,8 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
         gateway: enabledGateway,
         port: 3773,
       });
-      // The active provider is now peakcode-gateway.
-      assert.match(result, /^model_provider = "peakcode-gateway"$/m);
+      // The active provider is now peakcode.
+      assert.match(result, /^model_provider = "peakcode"$/m);
       // The original is preserved as a comment marker.
       assert.match(result, /^# peakcode-gateway-original-model-provider = "openai"$/m);
       // The literal openai line must not remain as an active top-level key.
@@ -90,7 +90,7 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
       assert.ok(result.includes("[model_providers.openai]"));
       assert.ok(result.includes('name = "OpenAI"'));
       // And our gateway section is appended.
-      assert.ok(result.includes("[model_providers.peakcode-gateway]"));
+      assert.ok(result.includes("[model_providers.peakcode]"));
     });
   });
 
@@ -147,7 +147,7 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
         gateway: disabledGateway,
         port: 3773,
       });
-      assert.ok(!disabled.includes("peakcode-gateway"));
+      assert.ok(!disabled.includes("peakcode"));
       assert.ok(!disabled.includes("model_provider"));
     });
 
@@ -164,7 +164,7 @@ describe("injectGatewayProviderIntoCodexConfig", () => {
       // The original openai provider is restored.
       assert.match(disabled, /^model_provider = "openai"$/m);
       // No gateway remnants.
-      assert.ok(!disabled.includes("peakcode-gateway"));
+      assert.ok(!disabled.includes("peakcode"));
       assert.ok(!disabled.includes("# peakcode-gateway-original"));
     });
 

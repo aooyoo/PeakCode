@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import {
   resolveAgentModel,
   resolveGatewayActiveChannel,
+  resolveChannelDefaultModel,
   type GatewayChannelConfig,
   type GatewayConfig,
 } from "@peakcode/contracts";
@@ -28,8 +29,14 @@ import { PEAKCODE_GATEWAY_CLIENT_API_KEY } from "./gateway";
 /** Sentinel API key written to every agent config. The gateway authenticates upstream itself. */
 export const PEAKCODE_AGENT_SENTINEL_KEY = PEAKCODE_GATEWAY_CLIENT_API_KEY;
 
-/** Provider id used inside agent config files to identify the gateway. */
-export const PEAKCODE_AGENT_PROVIDER_ID = "peakcode-gateway";
+/**
+ * Provider id used inside agent config files (JSON/TOML keys). Short and
+ * stable so model references read cleanly as "peakcode/<model>".
+ */
+export const PEAKCODE_AGENT_PROVIDER_ID = "peakcode";
+
+/** Human-readable provider name shown inside agent UIs. */
+export const PEAKCODE_AGENT_PROVIDER_NAME = "PeakCode";
 
 export type AgentProvisionId =
   | "codex"
@@ -78,9 +85,14 @@ function gatewayOpenAiBaseUrl(port: number): string {
   return `http://127.0.0.1:${port}/gateway/openai/v1`;
 }
 
-/** Gateway Anthropic Messages endpoint (Claude Code). */
+/**
+ * Gateway Anthropic base URL for Claude Code's settings.json.
+ *
+ * Claude Code SDK appends "/v1/messages" itself, so this must NOT include
+ * "/v1" — otherwise the final URL becomes "/gateway/anthropic/v1/v1/messages".
+ */
 function gatewayAnthropicBaseUrl(port: number): string {
-  return `http://127.0.0.1:${port}/gateway/anthropic/v1`;
+  return `http://127.0.0.1:${port}/gateway/anthropic`;
 }
 
 /** Active channel resolved for an agent (mapped model or channel default). */
@@ -291,7 +303,7 @@ export function codexStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProv
   return Effect.gen(function* () {
     const filePath = codexConfigPath(ctx.env);
     const text = yield* readCodexConfig(filePath);
-    const installed = text.includes('model_provider = "peakcode-gateway"');
+    const installed = text.includes(`model_provider = "${PEAKCODE_AGENT_PROVIDER_ID}"`);
     return {
       id: "codex",
       name: "Codex",
@@ -321,13 +333,45 @@ export function installClaude(ctx: AgentProvisionContext): Effect.Effect<void, A
     const baseUrl = gatewayAnthropicBaseUrl(ctx.port);
     const existing = yield* readJsonObject<ClaudeSettings>(filePath, {});
     const merged: Record<string, unknown> = { ...existing };
-    const envBlock: Record<string, string> = {
-      ...(existing.env ?? {}),
-      ANTHROPIC_BASE_URL: baseUrl,
-      ANTHROPIC_API_KEY: PEAKCODE_AGENT_SENTINEL_KEY,
-      ANTHROPIC_AUTH_TOKEN: PEAKCODE_AGENT_SENTINEL_KEY,
-    };
+
+    // Resolve the real model from the active channel — Claude Code will show
+    // this model name (e.g. "deepseek-chat") so the user can see exactly which
+    // model PeakCode is routing to. The gateway passes it straight through.
+    const channel = activeChannel(ctx.gateway);
+    const realModel =
+      (channel ? resolveAgentModel(channel, "claude") : null) ??
+      resolveChannelDefaultModel(channel ?? ({} as GatewayChannelConfig)) ??
+      "deepseek-chat";
+
+    // Preserve the user's existing env, then:
+    //  1) Replace any ANTHROPIC_*_MODEL* pins with the channel's real model so
+    //     Claude Code displays the actual model (deepseek-chat etc.) and sends
+    //     it to the gateway — no Claude-model masquerade.
+    //  2) Remove ANTHROPIC_AUTH_TOKEN (SDK warns when both AUTH_TOKEN and
+    //     API_KEY are set; the gateway uses x-api-key / API_KEY).
+    //  3) Point ANTHROPIC_BASE_URL at the local gateway + API_KEY sentinel.
+    const oldEnv = existing.env ?? {};
+    const envBlock: Record<string, string> = {};
+    for (const [key, value] of Object.entries(oldEnv)) {
+      const upperKey = key.toUpperCase();
+      const isModelPin =
+        upperKey.includes("MODEL") && upperKey.startsWith("ANTHROPIC_");
+      const isAuthToken = upperKey === "ANTHROPIC_AUTH_TOKEN";
+      if (!isModelPin && !isAuthToken && typeof value === "string") {
+        envBlock[key] = value;
+      }
+    }
+    envBlock.ANTHROPIC_BASE_URL = baseUrl;
+    envBlock.ANTHROPIC_API_KEY = PEAKCODE_AGENT_SENTINEL_KEY;
+    envBlock.ANTHROPIC_MODEL = realModel;
+    envBlock.ANTHROPIC_DEFAULT_SONNET_MODEL = realModel;
+    envBlock.ANTHROPIC_DEFAULT_HAIKU_MODEL = realModel;
+    envBlock.ANTHROPIC_DEFAULT_OPUS_MODEL = realModel;
     merged.env = envBlock;
+    // Also set the top-level `model` field — Claude Code reads this to decide
+    // which model to use for new sessions. Pin it to the channel's real model.
+    merged.model = realModel;
+
     yield* backupFile(filePath);
     yield* writeJsonFile(filePath, merged);
   });
@@ -387,7 +431,7 @@ export function installOpenCode(ctx: AgentProvisionContext): Effect.Effect<void,
     const channel = activeChannel(ctx.gateway);
     provider[PEAKCODE_AGENT_PROVIDER_ID] = {
       npm: "@ai-sdk/openai-compatible",
-      name: "PeakCode Gateway",
+      name: PEAKCODE_AGENT_PROVIDER_NAME,
       options: {
         baseURL: gatewayOpenAiBaseUrl(ctx.port),
         apiKey: PEAKCODE_AGENT_SENTINEL_KEY,
@@ -395,6 +439,12 @@ export function installOpenCode(ctx: AgentProvisionContext): Effect.Effect<void,
       models: channelModelsForOpenAi(channel),
     };
     const merged: Record<string, unknown> = { ...existing, provider };
+    // Set a default model (peakcode/<firstModel>) so the agent picks one up
+    // without the user having to select it manually.
+    const firstModel = channel?.models[0]?.id ?? channel?.model ?? "";
+    if (firstModel && (typeof merged.model !== "string" || !merged.model)) {
+      merged.model = `${PEAKCODE_AGENT_PROVIDER_ID}/${firstModel}`;
+    }
     yield* backupFile(filePath);
     yield* writeJsonFile(filePath, merged);
   });
@@ -444,6 +494,10 @@ export function installKilo(ctx: AgentProvisionContext): Effect.Effect<void, Age
       models: channelModelsForOpenAi(channel),
     };
     const merged: Record<string, unknown> = { ...existing, provider };
+    const firstModel = channel?.models[0]?.id ?? channel?.model ?? "";
+    if (firstModel && (typeof merged.model !== "string" || !merged.model)) {
+      merged.model = `${PEAKCODE_AGENT_PROVIDER_ID}/${firstModel}`;
+    }
     yield* backupFile(filePath);
     yield* writeJsonFile(filePath, merged);
   });
@@ -497,12 +551,12 @@ export function installCursor(ctx: AgentProvisionContext): Effect.Effect<void, A
     const existing = yield* readJsonArray<Record<string, unknown>>(filePath, []);
     const filtered = existing.filter((item) => {
       const name = typeof item.name === "string" ? item.name : "";
-      return name !== PEAKCODE_AGENT_PROVIDER_ID && name !== "PeakCode Gateway";
+      return name !== PEAKCODE_AGENT_PROVIDER_ID && name !== PEAKCODE_AGENT_PROVIDER_NAME;
     });
     const channel = activeChannel(ctx.gateway);
     const modelIds = (channel?.models ?? []).map((m) => m.id);
     filtered.push({
-      name: "PeakCode Gateway",
+      name: PEAKCODE_AGENT_PROVIDER_NAME,
       provider: "openai-compatible",
       baseUrl: gatewayOpenAiBaseUrl(ctx.port),
       models: modelIds.length > 0 ? modelIds : ["peakcode-model"],

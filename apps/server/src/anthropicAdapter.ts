@@ -172,11 +172,32 @@ export function anthropicToOpenAIChat(payload: Record<string, unknown>): Record<
   if (typeof payload.temperature === "number") chatPayload.temperature = payload.temperature;
   if (typeof payload.top_p === "number") chatPayload.top_p = payload.top_p;
 
-  // Tools: Anthropic {name, description, input_schema} -> OpenAI function tool.
+  // Tools: Anthropic custom tools {name, description, input_schema} -> OpenAI
+  // function tools. Anthropic server-side tools (web_search_*, computer_use,
+  // text_editor, bash, etc.) have no input_schema and are not translatable —
+  // they must be dropped, otherwise the upstream rejects the request.
   if (Array.isArray(payload.tools)) {
+    const ANTHROPIC_SERVER_TOOLS = new Set([
+      "web_search",
+      "computer",
+      "text_editor",
+      "bash",
+      "code_execution",
+    ]);
     const tools = payload.tools
       .map((tool) => {
         if (!isRecord(tool)) return null;
+        // Server-side tools carry a type like "web_search_20250305" but no
+        // input_schema. Skip them — the upstream can't handle Anthropic-native
+        // tool types, and Claude Code handles tool absence gracefully.
+        const toolType = typeof tool.type === "string" ? tool.type : "";
+        if (toolType && !toolType.startsWith("custom") && !isRecord(tool.input_schema)) {
+          return null;
+        }
+        // Also skip known server tool prefixes.
+        for (const serverTool of ANTHROPIC_SERVER_TOOLS) {
+          if (toolType.startsWith(serverTool)) return null;
+        }
         return {
           type: "function",
           function: {
@@ -522,15 +543,23 @@ export function openAIChatStreamToAnthropicStream(
  * request's `stream` flag), suitable for returning directly to the SDK.
  */
 export async function dispatchAnthropicMessages(input: AnthropicMessagesInput): Promise<Response> {
-  const model =
-    typeof input.payload.model === "string"
-      ? input.payload.model
-      : (resolveChannelDefaultModel(input.channel) ?? "claude-sonnet-4-5");
+  // ALWAYS use the channel's real model — the SDK sends a Claude model id
+  // (e.g. "claude-sonnet-4-20250514") which upstreams like DeepSeek don't
+  // recognize. The gateway ignores it and routes by channel config, exactly
+  // like composer-api does. Only for native "anthropic" channels do we pass
+  // the requested model through (handled in the anthropic branch below).
+  const model = resolveChannelDefaultModel(input.channel) ?? "claude-sonnet-4-5";
   const wantsStream = input.payload.stream === true;
 
   // Native Anthropic upstream: forward verbatim with the channel's auth.
+  // For native channels the requested model id IS valid (it's a real Claude
+  // model), so pass it through unchanged.
   if (input.channel.kind === "anthropic") {
     const apiKey = input.secrets.apiKey ?? "";
+    const requestedModel =
+      typeof input.payload.model === "string"
+        ? input.payload.model
+        : (resolveChannelDefaultModel(input.channel) ?? "claude-sonnet-4-5");
     return fetch(joinUrl(input.channel.baseUrl, "v1/messages"), {
       method: "POST",
       headers: {
@@ -538,7 +567,7 @@ export async function dispatchAnthropicMessages(input: AnthropicMessagesInput): 
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({ ...input.payload, model }),
+      body: JSON.stringify({ ...input.payload, model: requestedModel }),
       signal: input.signal ?? null,
     });
   }

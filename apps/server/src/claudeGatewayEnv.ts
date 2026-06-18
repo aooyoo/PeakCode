@@ -18,11 +18,15 @@ import { PEAKCODE_GATEWAY_CLIENT_API_KEY } from "./gateway";
 export const PEAKCODE_CLAUDE_GATEWAY_TOKEN = PEAKCODE_GATEWAY_CLIENT_API_KEY;
 
 /**
- * Builds the gateway base URL the Claude SDK should target. Matches the
- * /gateway/anthropic/v1 prefix registered in http.ts.
+ * Builds the gateway base URL the Claude SDK should target.
+ *
+ * IMPORTANT: Claude Code's SDK automatically appends "/v1/messages" to this
+ * URL, so it must NOT include "/v1". The SDK constructs:
+ *   {base_url}/v1/messages  →  http://127.0.0.1:{port}/gateway/anthropic/v1/messages
+ * which matches the /gateway/anthropic/v1/* route registered in http.ts.
  */
 export function buildClaudeGatewayBaseUrl(port: number): string {
-  return `http://127.0.0.1:${port}/gateway/anthropic/v1`;
+  return `http://127.0.0.1:${port}/gateway/anthropic`;
 }
 
 export interface ClaudeGatewayEnvOptions {

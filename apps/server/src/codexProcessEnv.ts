@@ -35,13 +35,13 @@ const NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS = "NODE_REPL_SANDBOX_ALLOWED_UNIX_S
 const PEAKCODE_BROWSER_PLUGIN_CONFIG_HEADER = '[plugins."peakcode-browser@local"]';
 
 // Gateway provider overlay constants.
-// When the PeakCode gateway is enabled, we inject a `peakcode-gateway` model
-// provider into Codex's config.toml so Codex routes requests through the
-// PeakCode-hosted local gateway endpoint (which then forwards to the upstream
-// provider, e.g. DeepSeek) instead of requiring per-tool configuration.
-const PEAKCODE_GATEWAY_PROVIDER_ID = "peakcode-gateway";
-const PEAKCODE_GATEWAY_PROVIDER_HEADER = "[model_providers.peakcode-gateway]";
-const PEAKCODE_GATEWAY_PROVIDER_AUTH_HEADER = "[model_providers.peakcode-gateway.auth]";
+// When the PeakCode gateway is enabled, we inject a `peakcode` model provider
+// into Codex's config.toml so Codex routes requests through the PeakCode-hosted
+// local gateway endpoint (which then forwards to the upstream provider, e.g.
+// DeepSeek) instead of requiring per-tool configuration.
+const PEAKCODE_GATEWAY_PROVIDER_ID = "peakcode";
+const PEAKCODE_GATEWAY_PROVIDER_HEADER = "[model_providers.peakcode]";
+const PEAKCODE_GATEWAY_PROVIDER_AUTH_HEADER = "[model_providers.peakcode.auth]";
 const PEAKCODE_GATEWAY_MODEL_PROVIDER_LINE = `model_provider = "${PEAKCODE_GATEWAY_PROVIDER_ID}"`;
 // Codex reads the API key from this env var, but the gateway authenticates
 // against the upstream itself using its own stored secret. The env var only
@@ -327,7 +327,7 @@ export function injectGatewayProviderIntoCodexConfig(
   }
   withProviderHeader.push(
     PEAKCODE_GATEWAY_PROVIDER_HEADER,
-    `name = "PeakCode Gateway"`,
+    `name = "PeakCode"`,
     `base_url = "${baseUrl}"`,
     `wire_api = "responses"`,
   );

@@ -70,9 +70,15 @@ describe("installAgentConfig (claude)", () => {
     const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
       env?: Record<string, string>;
     };
-    expect(settings.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:58190/gateway/anthropic/v1");
+    // SDK appends /v1/messages itself, so BASE_URL must NOT include /v1.
+    expect(settings.env?.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:58190/gateway/anthropic");
     expect(settings.env?.ANTHROPIC_API_KEY).toBe("peakcode-managed");
-    expect(settings.env?.ANTHROPIC_AUTH_TOKEN).toBe("peakcode-managed");
+    // AUTH_TOKEN must NOT be set (conflicts with API_KEY per SDK warning).
+    expect(settings.env?.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    // Model must be the channel's real model (e.g. deepseek-chat), not a
+    // fake Claude id — Claude Code displays this name and sends it to the
+    // gateway, which forwards it to the upstream verbatim.
+    expect(settings.env?.ANTHROPIC_MODEL).toBe("deepseek-chat");
   });
 
   it("preserves existing settings fields", async () => {
@@ -123,19 +129,18 @@ describe("installAgentConfig (claude)", () => {
 // ------------------------------------------------------------------
 
 describe("installAgentConfig (codex)", () => {
-  it("injects model_provider and a [model_providers.peakcode-gateway] section", async () => {
+  it("injects model_provider and a [model_providers.peakcode] section", async () => {
     const codexHome = path.join(tempHome, ".codex");
     const env = { HOME: tempHome, CODEX_HOME: codexHome };
     await runWithTempHome(installAgentConfig("codex", makeCtx(env, 58190)));
     const configPath = path.join(codexHome, "config.toml");
     const text = readFileSync(configPath, "utf8");
-    expect(text).toContain('model_provider = "peakcode-gateway"');
-    expect(text).toContain("[model_providers.peakcode-gateway]");
+    expect(text).toContain('model_provider = "peakcode"');
+    expect(text).toContain("[model_providers.peakcode]");
     expect(text).toContain("http://127.0.0.1:58190/gateway/openai/v1");
     expect(text).toContain('wire_api = "responses"');
-    expect(text).toContain("[model_providers.peakcode-gateway.auth]");
+    expect(text).toContain("[model_providers.peakcode.auth]");
     expect(text).toContain('args = ["peakcode-managed"]');
-    expect(text).not.toContain('env_key = "PEAKCODE_GATEWAY_API_KEY"');
     expect(text).toContain('model = "deepseek-chat"');
   });
 
@@ -154,22 +159,27 @@ describe("installAgentConfig (codex)", () => {
 // ------------------------------------------------------------------
 
 describe("installAgentConfig (opencode)", () => {
-  it("writes provider.peakcode-gateway with baseURL + apiKey + models", async () => {
+  it("writes provider.peakcode with baseURL + apiKey + models", async () => {
     const env = { HOME: tempHome };
     await runWithTempHome(installAgentConfig("opencode", makeCtx(env, 58190)));
     const configPath = path.join(tempHome, ".config/opencode/opencode.json");
     const config = JSON.parse(readFileSync(configPath, "utf8")) as {
       provider?: Record<string, unknown>;
+      model?: string;
     };
-    const provider = config.provider?.["peakcode-gateway"] as {
+    const provider = config.provider?.["peakcode"] as {
+      name?: string;
       options?: { baseURL?: string; apiKey?: string };
       models?: Record<string, unknown>;
     };
+    expect(provider?.name).toBe("PeakCode");
     expect(provider?.options?.baseURL).toBe("http://127.0.0.1:58190/gateway/openai/v1");
     expect(provider?.options?.apiKey).toBe("peakcode-managed");
     expect(Object.keys(provider?.models ?? {})).toEqual(
       expect.arrayContaining(["deepseek-chat", "deepseek-reasoner"]),
     );
+    // Default model ref should be peakcode/<firstModel>.
+    expect(config.model).toBe("peakcode/deepseek-chat");
   });
 });
 
