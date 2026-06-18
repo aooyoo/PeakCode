@@ -39,6 +39,18 @@ import {
 } from "./git";
 import { KeybindingRule } from "./keybindings";
 import {
+  GatewayConfig,
+  GatewayConfigPatch,
+  GatewaySecretStatusResult,
+  GatewaySetApiKeyInput,
+  GatewayRemoveApiKeyInput,
+} from "./gateway";
+import {
+  AgentInstallInput,
+  AgentInstallResult,
+  AgentProvisionStatusResult,
+} from "./agentProvision";
+import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
   OrchestrationEvent,
@@ -543,6 +555,48 @@ export const WsSkillsListLocalRpc = Rpc.make(WS_METHODS.skillsListLocal, {
   error: WsRpcError,
 });
 
+export const WsGatewayGetConfigRpc = Rpc.make(WS_METHODS.gatewayGetConfig, {
+  payload: Schema.Struct({}),
+  success: GatewayConfig,
+  error: WsRpcError,
+});
+
+export const WsGatewayUpdateConfigRpc = Rpc.make(WS_METHODS.gatewayUpdateConfig, {
+  payload: GatewayConfigPatch,
+  success: GatewayConfig,
+  error: WsRpcError,
+});
+
+export const WsGatewayGetSecretStatusRpc = Rpc.make(WS_METHODS.gatewayGetSecretStatus, {
+  payload: Schema.Struct({}),
+  success: GatewaySecretStatusResult,
+  error: WsRpcError,
+});
+
+export const WsGatewaySetApiKeyRpc = Rpc.make(WS_METHODS.gatewaySetApiKey, {
+  payload: GatewaySetApiKeyInput,
+  success: GatewaySecretStatusResult,
+  error: WsRpcError,
+});
+
+export const WsGatewayRemoveApiKeyRpc = Rpc.make(WS_METHODS.gatewayRemoveApiKey, {
+  payload: GatewayRemoveApiKeyInput,
+  success: GatewaySecretStatusResult,
+  error: WsRpcError,
+});
+
+export const WsAgentInstallConfigRpc = Rpc.make(WS_METHODS.agentInstallConfig, {
+  payload: AgentInstallInput,
+  success: AgentInstallResult,
+  error: WsRpcError,
+});
+
+export const WsAgentGetConfigStatusRpc = Rpc.make(WS_METHODS.agentGetConfigStatus, {
+  payload: Schema.Struct({}),
+  success: AgentProvisionStatusResult,
+  error: WsRpcError,
+});
+
 export const WsProviderListPluginsRpc = Rpc.make(WS_METHODS.providerListPlugins, {
   payload: ProviderListPluginsInput,
   success: ProviderListPluginsResult,
@@ -637,4 +691,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderListModelsRpc,
   WsProviderListAgentsRpc,
   WsSkillsListLocalRpc,
+  WsGatewayGetConfigRpc,
+  WsGatewayUpdateConfigRpc,
+  WsGatewayGetSecretStatusRpc,
+  WsGatewaySetApiKeyRpc,
+  WsGatewayRemoveApiKeyRpc,
+  WsAgentInstallConfigRpc,
+  WsAgentGetConfigStatusRpc,
 );

@@ -7,7 +7,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DateTime, Effect, FileSystem, Path } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createHttpRequestHandler, isLegacyTokenAuthorized } from "./http";
+import {
+  createHttpRequestHandler,
+  isLegacyTokenAuthorized,
+  isPeakCodeGatewaySentinelAuthorized,
+} from "./http";
 import type { ServerAuthShape } from "./auth/Services/ServerAuth";
 import { deriveServerPaths, type ServerConfigShape } from "./config";
 import type { ProjectFaviconResolverShape } from "./project/Services/ProjectFaviconResolver";
@@ -196,6 +200,27 @@ describe("createHttpRequestHandler", () => {
       isLegacyTokenAuthorized({
         config,
         url: new URL("http://127.0.0.1:3773/attachments/attachment-id?token=wrong"),
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts the gateway sentinel only from loopback requests", () => {
+    expect(
+      isPeakCodeGatewaySentinelAuthorized({
+        remoteAddress: "127.0.0.1",
+        headers: { authorization: "Bearer peakcode-managed" },
+      }),
+    ).toBe(true);
+    expect(
+      isPeakCodeGatewaySentinelAuthorized({
+        remoteAddress: "::1",
+        headers: { "x-api-key": "peakcode-managed" },
+      }),
+    ).toBe(true);
+    expect(
+      isPeakCodeGatewaySentinelAuthorized({
+        remoteAddress: "10.0.0.8",
+        headers: { authorization: "Bearer peakcode-managed" },
       }),
     ).toBe(false);
   });

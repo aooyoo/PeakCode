@@ -52,6 +52,7 @@ import {
   type ProviderListSkillsResult,
   type ProviderListAgentsResult,
   type ProviderListModelsResult,
+  type GatewayConfig,
   getAgentMentionAliases,
 } from "@peakcode/contracts";
 import {
@@ -73,6 +74,7 @@ import {
   FileSystem,
   Fiber,
   Layer,
+  Option,
   Queue,
   Random,
   Ref,
@@ -80,7 +82,13 @@ import {
 } from "effect";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import {
+  buildClaudeQueryEnv,
+  isClaudeGatewayActive,
+  resolveClaudeGatewayModel,
+} from "../../claudeGatewayEnv.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -3183,7 +3191,41 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const requestedEffort = trimOrNull(modelSelection?.options?.effort ?? null);
         const requestedContextWindow = trimOrNull(modelSelection?.options?.contextWindow ?? null);
         const caps = getModelCapabilities("claudeAgent", modelSelection?.model);
-        const apiModelId = modelSelection ? resolveApiModelId(modelSelection) : undefined;
+
+        // Gateway redirect: when the gateway is enabled, point the SDK at the
+        // local Anthropic-Messages gateway endpoint and pin the model to the
+        // active channel's Claude mapping. Otherwise behave as before.
+        //
+        // Reading ServerSettingsService adds it to this Effect's requirement (R),
+        // but the adapter method signatures pin R to `never`. The runtime
+        // ServiceMap always supplies this service at execution time, so we cast
+        // the sub-program to R=never — same pattern as
+        // codexAppServerManager.resolveGatewayOverlay. Effect.option makes any
+        // read failure a None so a corrupt settings file can't break startup.
+        const gatewayRedirectProgram = Effect.gen(function* () {
+          const settingsService = yield* ServerSettingsService;
+          const settings = yield* settingsService.getSettings;
+          return {
+            gateway: settings.gateway as GatewayConfig | undefined,
+            port: serverConfig.port,
+          } as const;
+        }).pipe(Effect.option) as Effect.Effect<
+          Option.Option<{ readonly gateway: GatewayConfig | undefined; readonly port: number }>,
+          never,
+          never
+        >;
+        const gatewayRedirect = yield* gatewayRedirectProgram;
+        const gatewayResolved = Option.isSome(gatewayRedirect)
+          ? gatewayRedirect.value
+          : { gateway: undefined, port: 0 };
+        const gatewayActive = isClaudeGatewayActive(gatewayResolved.gateway);
+        const gatewayModel = gatewayActive ? resolveClaudeGatewayModel(gatewayResolved.gateway) : null;
+
+        const apiModelId = gatewayActive
+          ? (gatewayModel ?? undefined)
+          : modelSelection
+            ? resolveApiModelId(modelSelection)
+            : undefined;
         const effort =
           requestedEffort && hasEffortLevel(caps, requestedEffort) ? requestedEffort : null;
         const fastMode = modelSelection?.options?.fastMode === true && caps.supportsFastMode;
@@ -3232,7 +3274,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
-          env: process.env,
+          env: buildClaudeQueryEnv(process.env, {
+            gateway: gatewayResolved.gateway,
+            port: gatewayResolved.port,
+          }),
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         };
 
@@ -3416,12 +3461,31 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         if (modelSelection?.model) {
-          const apiModelId = resolveApiModelId(modelSelection);
+          // When the gateway is active, every turn must use the gateway-resolved
+          // model regardless of the user's pick — the gateway only knows how to
+          // route its configured channel models, not arbitrary Anthropic ids.
+          // (See startSession for the never-require cast rationale.)
+          const gatewayForTurnProgram = Effect.gen(function* () {
+            const settingsService = yield* ServerSettingsService;
+            const settings = yield* settingsService.getSettings;
+            return settings.gateway as GatewayConfig | undefined;
+          }).pipe(Effect.option) as Effect.Effect<
+            Option.Option<GatewayConfig | undefined>,
+            never,
+            never
+          >;
+          const gatewayForTurnOpt = yield* gatewayForTurnProgram;
+          const gatewayForTurnValue = Option.isSome(gatewayForTurnOpt)
+            ? gatewayForTurnOpt.value
+            : undefined;
+          const turnModelId = isClaudeGatewayActive(gatewayForTurnValue)
+            ? (resolveClaudeGatewayModel(gatewayForTurnValue) ?? resolveApiModelId(modelSelection))
+            : resolveApiModelId(modelSelection);
           yield* Effect.tryPromise({
-            try: () => context.query.setModel(apiModelId),
+            try: () => context.query.setModel(turnModelId),
             catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
           });
-          context.currentApiModelId = apiModelId;
+          context.currentApiModelId = turnModelId;
           if (requestedContextWindowMaxTokens !== undefined) {
             context.lastKnownContextWindow = requestedContextWindowMaxTokens;
           }
@@ -3432,14 +3496,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // "default" restores the session's original permission mode.
         // When interactionMode is absent we leave the current mode unchanged.
         const targetPermissionMode: PermissionMode =
-          input.interactionMode === "plan"
-            ? "plan"
-            : (context.basePermissionMode ?? "default");
+          input.interactionMode === "plan" ? "plan" : (context.basePermissionMode ?? "default");
 
-        if (
-          input.interactionMode === "plan" ||
-          input.interactionMode === "default"
-        ) {
+        if (input.interactionMode === "plan" || input.interactionMode === "default") {
           if (context.lastSentPermissionMode !== targetPermissionMode) {
             yield* Effect.tryPromise({
               try: () => context.query.setPermissionMode(targetPermissionMode),

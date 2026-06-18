@@ -9,6 +9,22 @@
 - If the user asks to focus on code only, do not run `bun fmt`, `bun lint`, or `bun typecheck` automatically. In that mode, make the code changes first and only run verification if the user explicitly asks for it.
 - NEVER run `bun test`. Always use `bun run test` (runs Vitest).
 
+## PR Review
+
+Before reviewing or merging any pull request, run the project's PR review script first:
+
+```bash
+bash scripts/pr-review.sh [PR_NUMBER]      # review a specific PR
+bash scripts/pr-review.sh                  # auto-detect PR from current branch
+bash scripts/pr-review.sh --all            # review all open PRs
+```
+
+The script checks a PR against `CONTRIBUTING.md` and `AGENTS.md` conventions across 16 categories: description completeness, diff size (<200 lines preferred), mergeability, changed-file hygiene, `bun.lock` drift, debug artifacts, `bun fmt:check`, `bun typecheck`, `bun lint`, affected tests, checklist compliance, scope purity, and AGENTS.md compliance.
+
+Exit codes: `0` = approved (possibly with caveats), `1` = changes requested (errors must be fixed), `2` = rejected (do not merge).
+
+Use the script's output to guide review comments and merge decisions. Do not merge a PR that returns exit code `1` or `2` without resolving the reported issues.
+
 ## Project Snapshot
 
 Peak Code is a minimal web GUI for using coding agents like Codex and Claude.

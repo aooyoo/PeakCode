@@ -5,6 +5,11 @@
 
 import {
   PROVIDER_DISPLAY_NAMES,
+  type GatewayChannelConfig,
+  type AgentProvisionId,
+  type AgentProvisionStatus,
+  type GatewayChannelId,
+  type GatewayConfigPatch,
   type ProviderKind,
   type ServerProviderStatus,
   type ThreadId,
@@ -12,7 +17,6 @@ import {
 } from "@peakcode/contracts";
 import { createFileRoute, useSearch } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getModelOptions, normalizeModelSlug } from "@peakcode/shared/model";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   closestCenter,
@@ -32,13 +36,9 @@ import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { CSS } from "@dnd-kit/utilities";
 import {
   MAX_CHAT_FONT_SIZE_PX,
-  getCustomModelsForProvider,
   getGitTextGenerationModelOptions,
-  MAX_CUSTOM_MODEL_LENGTH,
   MIN_CHAT_FONT_SIZE_PX,
-  MODEL_PROVIDER_SETTINGS,
   normalizeChatFontSizePx,
-  patchCustomModels,
   SidebarProjectSortOrder,
   SidebarThreadSortOrder,
   type LanguageSetting,
@@ -81,20 +81,24 @@ import {
   ArchiveIcon,
   ChevronDownIcon,
   DownloadIcon,
+  ChevronRightIcon,
   ExternalLinkIcon,
   Loader2Icon,
-  PlusIcon,
   RotateCcwIcon,
   Undo2Icon,
   XIcon,
 } from "../lib/icons";
 import {
+  agentConfigStatusQueryOptions,
+  gatewayConfigQueryOptions,
+  gatewaySecretStatusQueryOptions,
   serverConfigQueryOptions,
   serverQueryKeys,
   serverWorktreesQueryOptions,
 } from "../lib/serverReactQuery";
 import { cn, isMacPlatform } from "../lib/utils";
 import { newCommandId } from "../lib/utils";
+import { resolveWsHttpUrl } from "../lib/wsHttpUrl";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
 import {
   buildNotificationSettingsSupportText,
@@ -120,7 +124,8 @@ type ModelChannelId =
   | "volcano"
   | "tongyi"
   | "kimi"
-  | "minimax";
+  | "minimax"
+  | "mimo";
 
 type ModelChannel = {
   readonly id: ModelChannelId;
@@ -170,31 +175,70 @@ const MODEL_CHANNELS: ReadonlyArray<ModelChannel> = [
     subtitle: "MiniMax · 海螺 AI",
     iconColor: "#10B981",
   },
+  {
+    id: "mimo",
+    name: "小米 MiMo",
+    subtitle: "小米 · MiMo（Cookie 认证）",
+    iconColor: "#FF6900",
+  },
 ];
 
-const MODEL_CHANNELS_STORAGE_KEY = "peakcode:enabled-model-channels:v1";
+const AGENT_SETUP_CATALOG: ReadonlyArray<{
+  id: AgentProvisionId;
+  name: string;
+  iconClassName: string;
+}> = [
+  { id: "opencode", name: "OpenCode", iconClassName: "bg-slate-700" },
+  { id: "cursor", name: "VS Code", iconClassName: "bg-blue-500" },
+  { id: "kilo", name: "Kilo Code", iconClassName: "bg-neutral-900" },
+  { id: "claude", name: "Claude Code", iconClassName: "bg-orange-500" },
+  { id: "codex", name: "Codex", iconClassName: "bg-emerald-600" },
+  { id: "cline", name: "Cline", iconClassName: "bg-violet-600" },
+  { id: "pi", name: "pi", iconClassName: "bg-rose-500" },
+];
 
-function readEnabledModelChannels(): ReadonlyArray<ModelChannelId> {
-  try {
-    const raw = localStorage.getItem(MODEL_CHANNELS_STORAGE_KEY);
-    if (!raw) return MODEL_CHANNELS.map((c) => c.id);
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      const valid = new Set(MODEL_CHANNELS.map((c) => c.id));
-      return parsed.filter((id): id is ModelChannelId => valid.has(id));
-    }
-  } catch {
-    // ignore
-  }
-  return MODEL_CHANNELS.map((c) => c.id);
+function channelSecretStatuses(
+  channelId: GatewayChannelId,
+  statuses: ReadonlyArray<{ channelId: GatewayChannelId; secretId: string; hasApiKey: boolean }>,
+) {
+  return statuses
+    .filter((status) => status.channelId === channelId)
+    .map((status) => ({ secretId: status.secretId, hasApiKey: status.hasApiKey }));
 }
 
-function writeEnabledModelChannels(ids: ReadonlyArray<ModelChannelId>): void {
-  try {
-    localStorage.setItem(MODEL_CHANNELS_STORAGE_KEY, JSON.stringify(ids));
-  } catch {
-    // ignore
-  }
+function channelHasRequiredSecrets(
+  channel: GatewayChannelConfig | undefined,
+  statuses: ReadonlyArray<{ secretId: string; hasApiKey: boolean }>,
+): boolean {
+  if (!channel) return false;
+  return channel.secrets.every((secret) =>
+    statuses.some((status) => status.secretId === secret.id && status.hasApiKey),
+  );
+}
+
+function channelHasModel(channel: GatewayChannelConfig | undefined): boolean {
+  if (!channel) return false;
+  if (channel.models.some((model) => model.id.trim().length > 0)) return true;
+  return channel.model.trim().length > 0;
+}
+
+function channelIsComplete(
+  channel: GatewayChannelConfig | undefined,
+  statuses: ReadonlyArray<{ secretId: string; hasApiKey: boolean }>,
+): boolean {
+  return Boolean(
+    channel &&
+      channel.baseUrl.trim().length > 0 &&
+      channelHasModel(channel) &&
+      channelHasRequiredSecrets(channel, statuses),
+  );
+}
+
+function editableChannelModels(
+  channel: GatewayChannelConfig,
+): Array<{ id: string; label: string }> {
+  if (channel.models.length > 0) return [...channel.models];
+  return channel.model.trim() ? [{ id: channel.model, label: channel.model }] : [];
 }
 
 type InstallBinarySettingsKey =
@@ -672,6 +716,101 @@ function SettingsRouteView() {
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const serverWorktreesQuery = useQuery(serverWorktreesQueryOptions());
   const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
+  const gatewayConfigQuery = useQuery(gatewayConfigQueryOptions());
+  const gatewaySecretStatusQuery = useQuery(gatewaySecretStatusQueryOptions());
+  const agentConfigStatusQuery = useQuery(agentConfigStatusQueryOptions());
+  const gatewaySecretStatuses = gatewaySecretStatusQuery.data?.secrets ?? [];
+  const agentSetupRows = useMemo(() => {
+    const liveStatuses = new Map<AgentProvisionId, AgentProvisionStatus>(
+      (agentConfigStatusQuery.data?.agents ?? []).map((agent) => [agent.id, agent]),
+    );
+    return AGENT_SETUP_CATALOG.map((agent) => {
+      const liveStatus = liveStatuses.get(agent.id);
+      return {
+        id: agent.id,
+        name: agent.name,
+        iconClassName: agent.iconClassName,
+        installed: liveStatus?.installed ?? false,
+        detail:
+          liveStatus?.detail ??
+          (agentConfigStatusQuery.isError ? "Status unavailable" : "Provider needs update"),
+        configPath: liveStatus?.configPath ?? "",
+      };
+    });
+  }, [agentConfigStatusQuery.data?.agents, agentConfigStatusQuery.isError]);
+  const enabledChannelCount =
+    gatewayConfigQuery.data?.channels.filter((channel) =>
+      channel.enabled &&
+      channelIsComplete(channel, channelSecretStatuses(channel.id, gatewaySecretStatuses)),
+    ).length ?? 0;
+  const updateGatewayConfigMutation = useMutation({
+    mutationFn: async (patch: GatewayConfigPatch) => {
+      const api = ensureNativeApi();
+      return api.gateway.updateConfig(patch);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.gateway.config() });
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.agent.configStatus() });
+    },
+    onError: (error) => {
+      toastManager.add({
+        title: "网关配置更新失败",
+        description: error instanceof Error ? error.message : String(error),
+        type: "error",
+      });
+    },
+  });
+  const setGatewayApiKeyMutation = useMutation({
+    mutationFn: async (input: { channelId: string; secretId: string; apiKey: string }) => {
+      const api = ensureNativeApi();
+      return api.gateway.setApiKey(
+        input as {
+          channelId: GatewayChannelId;
+          secretId: string;
+          apiKey: string;
+        },
+      );
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.gateway.secretStatus() });
+    },
+    onError: (error) => {
+      toastManager.add({
+        title: "密钥保存失败",
+        description: error instanceof Error ? error.message : String(error),
+        type: "error",
+      });
+    },
+  });
+  const removeGatewayApiKeyMutation = useMutation({
+    mutationFn: async (input: { channelId: string; secretId: string }) => {
+      const api = ensureNativeApi();
+      return api.gateway.removeApiKey({
+        channelId: input.channelId as GatewayChannelId,
+        secretId: input.secretId,
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.gateway.secretStatus() });
+    },
+    onError: (error) => {
+      toastManager.add({
+        title: "密钥清除失败",
+        description: error instanceof Error ? error.message : String(error),
+        type: "error",
+      });
+    },
+  });
+  const installAgentConfigMutation = useMutation({
+    mutationFn: async (agent: string) => {
+      const api = ensureNativeApi();
+      return api.agent.installConfig({ agent: agent as AgentProvisionId });
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(serverQueryKeys.agent.configStatus(), data);
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.agent.configStatus() });
+    },
+  });
   const syncServerReadModel = useStore((store) => store.syncServerReadModel);
   const threads = useStore(useMemo(() => createAllThreadsSelector(), []));
   const projects = useStore((store) => store.projects);
@@ -706,28 +845,6 @@ function SettingsRouteView() {
   const [updatingProviders, setUpdatingProviders] = useState<ReadonlySet<ProviderKind>>(
     () => new Set(),
   );
-  const [selectedCustomModelProvider, setSelectedCustomModelProvider] =
-    useState<ProviderKind>("codex");
-  const [customModelInputByProvider, setCustomModelInputByProvider] = useState<
-    Record<ProviderKind, string>
-  >({
-    codex: "",
-    claudeAgent: "",
-    cursor: "",
-    gemini: "",
-    grok: "",
-    kilo: "",
-    opencode: "",
-    pi: "",
-  });
-  const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
-    Partial<Record<ProviderKind, string | null>>
-  >({});
-  const [showAllCustomModels, setShowAllCustomModels] = useState(false);
-  const [enabledModelChannels, setEnabledModelChannels] = useState<ReadonlyArray<ModelChannelId>>(
-    readEnabledModelChannels,
-  );
-  const [gatewayRunning, setGatewayRunning] = useState(false);
   const [browserNotificationPermission, setBrowserNotificationPermission] = useState(
     readBrowserNotificationPermissionState(),
   );
@@ -859,31 +976,6 @@ function SettingsRouteView() {
         option.provider === currentGitTextGenerationProvider &&
         option.slug === currentGitTextGenerationModel,
     )?.name ?? currentGitTextGenerationModel;
-  const selectedCustomModelProviderSettings = MODEL_PROVIDER_SETTINGS.find(
-    (providerSettings) => providerSettings.provider === selectedCustomModelProvider,
-  )!;
-  const selectedCustomModelInput = customModelInputByProvider[selectedCustomModelProvider];
-  const selectedCustomModelError = customModelErrorByProvider[selectedCustomModelProvider] ?? null;
-  const totalCustomModels =
-    settings.customCodexModels.length +
-    settings.customClaudeModels.length +
-    settings.customCursorModels.length +
-    settings.customGeminiModels.length +
-    settings.customGrokModels.length +
-    settings.customKiloModels.length +
-    settings.customOpenCodeModels.length +
-    settings.customPiModels.length;
-  const savedCustomModelRows = MODEL_PROVIDER_SETTINGS.flatMap((providerSettings) =>
-    getCustomModelsForProvider(settings, providerSettings.provider).map((slug) => ({
-      key: `${providerSettings.provider}:${slug}`,
-      provider: providerSettings.provider,
-      providerTitle: providerSettings.title,
-      slug,
-    })),
-  );
-  const visibleCustomModelRows = showAllCustomModels
-    ? savedCustomModelRows
-    : savedCustomModelRows.slice(0, 5);
   const isInstallSettingsDirty =
     settings.claudeBinaryPath !== defaults.claudeBinaryPath ||
     settings.cursorBinaryPath !== defaults.cursorBinaryPath ||
@@ -1008,70 +1100,6 @@ function SettingsRouteView() {
     setBrowserNotificationPermission(readBrowserNotificationPermissionState());
   }, []);
 
-  const addCustomModel = useCallback(
-    (provider: ProviderKind) => {
-      const customModelInput = customModelInputByProvider[provider];
-      const customModels = getCustomModelsForProvider(settings, provider);
-      const normalized = normalizeModelSlug(customModelInput, provider);
-      if (!normalized) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "Enter a model slug.",
-        }));
-        return;
-      }
-      if (getModelOptions(provider).some((option) => option.slug === normalized)) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "That model is already built in.",
-        }));
-        return;
-      }
-      if (normalized.length > MAX_CUSTOM_MODEL_LENGTH) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: `Model slugs must be ${MAX_CUSTOM_MODEL_LENGTH} characters or less.`,
-        }));
-        return;
-      }
-      if (customModels.includes(normalized)) {
-        setCustomModelErrorByProvider((existing) => ({
-          ...existing,
-          [provider]: "That custom model is already saved.",
-        }));
-        return;
-      }
-
-      updateSettings(patchCustomModels(provider, [...customModels, normalized]));
-      setCustomModelInputByProvider((existing) => ({
-        ...existing,
-        [provider]: "",
-      }));
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: null,
-      }));
-    },
-    [customModelInputByProvider, settings, updateSettings],
-  );
-
-  const removeCustomModel = useCallback(
-    (provider: ProviderKind, slug: string) => {
-      const customModels = getCustomModelsForProvider(settings, provider);
-      updateSettings(
-        patchCustomModels(
-          provider,
-          customModels.filter((model) => model !== slug),
-        ),
-      );
-      setCustomModelErrorByProvider((existing) => ({
-        ...existing,
-        [provider]: null,
-      }));
-    },
-    [settings, updateSettings],
-  );
-
   const handleProviderOrderDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
@@ -1157,19 +1185,6 @@ function SettingsRouteView() {
       opencode: false,
       pi: false,
     });
-    setSelectedCustomModelProvider("codex");
-    setCustomModelInputByProvider({
-      codex: "",
-      claudeAgent: "",
-      cursor: "",
-      gemini: "",
-      grok: "",
-      kilo: "",
-      opencode: "",
-      pi: "",
-    });
-    setCustomModelErrorByProvider({});
-    setShowAllCustomModels(false);
     setShowRecoveryTools(false);
     setOpenKeybindingsError(null);
   }
@@ -2551,29 +2566,71 @@ function SettingsRouteView() {
         <div className="space-y-2">
           <SettingsRow
             title="本地 API 网关"
-            description="启动后可通过统一本地端点访问所有已启用的模型渠道。"
+            description={
+              enabledChannelCount > 0
+                ? `已启用 ${enabledChannelCount} 个渠道。打开开关后即可通过本地端点访问。`
+                : "启动后可通过统一本地端点访问所有已启用的模型渠道。请先在下方启用至少一个渠道。"
+            }
             control={
               <Switch
-                checked={gatewayRunning}
-                onCheckedChange={(checked) => setGatewayRunning(checked)}
+                checked={gatewayConfigQuery.data?.enabled ?? false}
+                disabled={updateGatewayConfigMutation.isPending}
+                onCheckedChange={(checked) => {
+                  if (checked && enabledChannelCount === 0) {
+                    toastManager.add({
+                      title: "请先启用至少一个渠道",
+                      description: "在下方「模型渠道接入」配置密钥并启用一个渠道后再打开网关。",
+                      type: "info",
+                    });
+                    return;
+                  }
+                  const config = gatewayConfigQuery.data;
+                  if (checked && config) {
+                    const activeComplete = config.channels.some(
+                      (channel) =>
+                        channel.id === config.activeChannelId &&
+                        channel.enabled &&
+                        channelIsComplete(
+                          channel,
+                          channelSecretStatuses(channel.id, gatewaySecretStatuses),
+                        ),
+                    );
+                    if (!activeComplete) {
+                      const firstComplete = config.channels.find(
+                        (channel) =>
+                          channel.enabled &&
+                          channelIsComplete(
+                            channel,
+                            channelSecretStatuses(channel.id, gatewaySecretStatuses),
+                          ),
+                      );
+                      updateGatewayConfigMutation.mutate({
+                        enabled: checked,
+                        ...(firstComplete ? { activeChannelId: firstComplete.id } : {}),
+                      });
+                      return;
+                    }
+                  }
+                  updateGatewayConfigMutation.mutate({ enabled: checked });
+                }}
               />
             }
           />
-          {gatewayRunning ? (
+          {gatewayConfigQuery.data?.enabled ? (
             <div className="mt-4 space-y-5 border-t border-border pt-4">
               {/* ── Local API ── */}
               <div>
                 <h4 className="mb-2 text-sm font-semibold text-foreground">Local API</h4>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  Listening on http://127.0.0.1:9872/v1
+                  Listening on {resolveWsHttpUrl("/gateway/openai/v1").replace(/\?token=.*/u, "")}
                 </p>
                 <div className="space-y-1">
                   {[
-                    { label: "Root", url: "http://127.0.0.1:9872/v1" },
-                    { label: "Chat", url: "http://127.0.0.1:9872/v1/chat/completions" },
-                    { label: "Messages", url: "http://127.0.0.1:9872/v1/messages" },
-                    { label: "Responses", url: "http://127.0.0.1:9872/v1/responses" },
-                    { label: "Models", url: "http://127.0.0.1:9872/v1/models" },
+                    { label: "Root", url: resolveWsHttpUrl("/gateway/openai/v1").replace(/\?token=.*/u, "") },
+                    { label: "Chat", url: resolveWsHttpUrl("/gateway/openai/v1/chat/completions").replace(/\?token=.*/u, "") },
+                    { label: "Models", url: resolveWsHttpUrl("/gateway/openai/v1/models").replace(/\?token=.*/u, "") },
+                    { label: "Responses", url: resolveWsHttpUrl("/gateway/openai/v1/responses").replace(/\?token=.*/u, "") },
+                    { label: "Anthropic", url: resolveWsHttpUrl("/gateway/anthropic").replace(/\?token=.*/u, "") },
                   ].map((ep) => (
                     <div
                       key={ep.label}
@@ -2592,7 +2649,19 @@ function SettingsRouteView() {
                         }}
                         aria-label={`Copy ${ep.label} URL`}
                       >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                        </svg>
                       </button>
                     </div>
                   ))}
@@ -2601,105 +2670,87 @@ function SettingsRouteView() {
 
               {/* ── Agent Setup ── */}
               <div>
-                <h4 className="mb-3 text-sm font-semibold text-foreground">Agent Setup</h4>
+                <h4 className="mb-1 text-sm font-semibold text-foreground">Agent Setup</h4>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  将网关配置写入各 Agent 的本地配置文件。Codex / Claude Code 经网关协议转换；OpenCode /
+                  Kilo / Cursor / pi / Cline 经 OpenAI 标准协议转发。点击写入后，手动启动对应 Agent 即可用网关。
+                </p>
+                {agentConfigStatusQuery.isError ? (
+                  <p className="mb-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300">
+                    当前无法读取本地 Agent 配置状态，但仍可点击 Update 重新写入网关配置。
+                  </p>
+                ) : null}
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {[
-                    {
-                      name: "OpenCode",
-                      status: "Composer models installed",
-                      statusType: "ok" as const,
-                      action: "Open" as const,
-                    },
-                    {
-                      name: "VS Code",
-                      status: "Provider needs update",
-                      statusType: "warn" as const,
-                      action: "Update" as const,
-                    },
-                    {
-                      name: "Kilo Code",
-                      status: "Provider needs update",
-                      statusType: "warn" as const,
-                      action: "Update" as const,
-                    },
-                    {
-                      name: "Claude Code",
-                      status: "Claude Code configured",
-                      statusType: "ok" as const,
-                      action: "Open" as const,
-                    },
-                    {
-                      name: "Codex",
-                      status: "Custom provider installed",
-                      statusType: "ok" as const,
-                      action: "Open" as const,
-                    },
-                    {
-                      name: "Cline",
-                      status: "Provider profile installed",
-                      statusType: "ok" as const,
-                      action: "Open" as const,
-                    },
-                    {
-                      name: "pi",
-                      status: "Custom models installed",
-                      statusType: "ok" as const,
-                      action: "Open" as const,
-                    },
-                  ].map((agent) => (
-                    <div
-                      key={agent.name}
-                      className="flex items-center justify-between rounded-lg border border-border/40 bg-[var(--color-background-panel)] px-3 py-2.5"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <div
-                          className={cn(
-                            "flex size-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white",
-                            agent.name === "OpenCode" && "bg-slate-700",
-                            agent.name === "VS Code" && "bg-blue-500",
-                            agent.name === "Kilo Code" && "bg-neutral-900",
-                            agent.name === "Claude Code" && "bg-orange-500",
-                            agent.name === "Codex" && "bg-emerald-600",
-                            agent.name === "Cline" && "bg-violet-600",
-                            agent.name === "pi" && "bg-rose-500",
-                          )}
-                        >
-                          {agent.name.slice(0, 2).toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="text-sm font-medium">{agent.name}</div>
+                  {agentSetupRows.map((agent) => {
+                    const statusType = agent.installed ? "ok" : "warn";
+                    const installing =
+                      installAgentConfigMutation.isPending &&
+                      installAgentConfigMutation.variables === agent.id;
+                    return (
+                      <div
+                        key={agent.id}
+                        className="flex items-center justify-between rounded-lg border border-border/40 bg-[var(--color-background-panel)] px-3 py-2.5"
+                      >
+                        <div className="flex min-w-0 items-center gap-2.5">
                           <div
                             className={cn(
-                              "flex items-center gap-1 text-xs",
-                              agent.statusType === "ok" && "text-emerald-500",
-                              agent.statusType === "warn" && "text-amber-500",
+                              "flex size-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white",
+                              agent.iconClassName,
                             )}
                           >
-                            <span
+                            {agent.name.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium">{agent.name}</div>
+                            <div
                               className={cn(
-                                "inline-block size-1.5 rounded-full",
-                                agent.statusType === "ok" && "bg-emerald-500",
-                                agent.statusType === "warn" && "bg-amber-500",
+                                "flex items-center gap-1 text-xs",
+                                statusType === "ok" && "text-emerald-500",
+                                statusType === "warn" && "text-amber-500",
                               )}
-                            />
-                            {agent.status}
+                            >
+                              <span
+                                className={cn(
+                                  "inline-block size-1.5 shrink-0 rounded-full",
+                                  statusType === "ok" && "bg-emerald-500",
+                                  statusType === "warn" && "bg-amber-500",
+                                )}
+                              />
+                              <span className="truncate" title={agent.configPath}>
+                                {agent.detail}
+                              </span>
+                            </div>
                           </div>
                         </div>
+                        <Button
+                          size="xs"
+                          variant={agent.installed ? "outline" : "secondary"}
+                          disabled={installing}
+                          onClick={() => {
+                            installAgentConfigMutation.mutate(agent.id, {
+                              onSuccess: () => {
+                                toastManager.add({
+                                  title: `${agent.name} 配置已写入`,
+                                  description: agent.configPath,
+                                  type: "success",
+                                });
+                              },
+                              onError: (error) => {
+                                toastManager.add({
+                                  title: `${agent.name} 写入失败`,
+                                  description:
+                                    error instanceof Error ? error.message : String(error),
+                                  type: "error",
+                                });
+                              },
+                            });
+                          }}
+                        >
+                          {installing ? "Updating…" : "Update"}
+                        </Button>
                       </div>
-                      <Button
-                        size="xs"
-                        variant={agent.action === "Update" ? "secondary" : "outline"}
-                        onClick={() => {
-                          toastManager.add({
-                            title: `${agent.name} ${agent.action.toLowerCase()}ing...`,
-                            type: "info",
-                          });
-                        }}
-                      >
-                        {agent.action}
-                      </Button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -2707,214 +2758,104 @@ function SettingsRouteView() {
         </div>
       </SettingsSection>
 
-      <SettingsSection title={messages.settings.models.customSection}>
-        <div className="space-y-2">
-          <SettingsRow
-            title={messages.settings.models.savedModelSlugs}
-            description={messages.settings.models.savedModelSlugsDescription}
-            resetAction={
-              totalCustomModels > 0 ? (
-                <SettingResetButton
-                  label={messages.settings.models.customModelResetLabel}
-                  onClick={() => {
-                    updateSettings({
-                      customCodexModels: defaults.customCodexModels,
-                      customClaudeModels: defaults.customClaudeModels,
-                      customCursorModels: defaults.customCursorModels,
-                      customGeminiModels: defaults.customGeminiModels,
-                      customGrokModels: defaults.customGrokModels,
-                      customKiloModels: defaults.customKiloModels,
-                      customOpenCodeModels: defaults.customOpenCodeModels,
-                      customPiModels: defaults.customPiModels,
-                    });
-                    setCustomModelErrorByProvider({});
-                    setShowAllCustomModels(false);
-                  }}
-                />
-              ) : null
-            }
-          >
-            <div className="mt-4 border-t border-border pt-4">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <Select
-                  value={selectedCustomModelProvider}
-                  onValueChange={(value) => {
-                    if (
-                      value !== "codex" &&
-                      value !== "claudeAgent" &&
-                      value !== "cursor" &&
-                      value !== "gemini" &&
-                      value !== "grok" &&
-                      value !== "kilo" &&
-                      value !== "opencode" &&
-                      value !== "pi"
-                    ) {
-                      return;
-                    }
-                    setSelectedCustomModelProvider(value);
-                  }}
-                >
-                  <SelectTrigger
-                    size="sm"
-                    className="w-full sm:w-40"
-                    aria-label={messages.settings.models.customProviderAria}
-                  >
-                    <SelectValue>{selectedCustomModelProviderSettings.title}</SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup align="start" alignItemWithTrigger={false}>
-                    {MODEL_PROVIDER_SETTINGS.map((providerSettings) => (
-                      <SelectItem
-                        hideIndicator
-                        className="min-h-7 text-sm"
-                        key={providerSettings.provider}
-                        value={providerSettings.provider}
-                      >
-                        {providerSettings.title}
-                      </SelectItem>
-                    ))}
-                  </SelectPopup>
-                </Select>
-                <Input
-                  id="custom-model-slug"
-                  value={selectedCustomModelInput}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setCustomModelInputByProvider((existing) => ({
-                      ...existing,
-                      [selectedCustomModelProvider]: value,
-                    }));
-                    if (selectedCustomModelError) {
-                      setCustomModelErrorByProvider((existing) => ({
-                        ...existing,
-                        [selectedCustomModelProvider]: null,
-                      }));
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") return;
-                    event.preventDefault();
-                    addCustomModel(selectedCustomModelProvider);
-                  }}
-                  placeholder={selectedCustomModelProviderSettings.example}
-                  spellCheck={false}
-                />
-                <Button
-                  className="shrink-0"
-                  variant="outline"
-                  onClick={() => addCustomModel(selectedCustomModelProvider)}
-                >
-                  <PlusIcon className="size-3.5" />
-                  {messages.settings.models.customAddButton}
-                </Button>
-              </div>
-
-              {selectedCustomModelError ? (
-                <p className="mt-2 text-xs text-destructive">{selectedCustomModelError}</p>
-              ) : null}
-
-              {totalCustomModels > 0 ? (
-                <div className="mt-3">
-                  <div>
-                    {visibleCustomModelRows.map((row) => (
-                      <div
-                        key={row.key}
-                        className="group grid grid-cols-[minmax(5rem,6rem)_minmax(0,1fr)_auto] items-center gap-3 border-t border-border/60 px-4 py-2 first:border-t-0"
-                      >
-                        <span className="truncate text-xs text-muted-foreground">
-                          {row.providerTitle}
-                        </span>
-                        <code className="min-w-0 truncate text-sm text-foreground">{row.slug}</code>
-                        <button
-                          type="button"
-                          className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 hover:opacity-100"
-                          aria-label={messages.settings.models.customRemoveAria(row.slug)}
-                          onClick={() => removeCustomModel(row.provider, row.slug)}
-                        >
-                          <XIcon className="size-3.5 text-muted-foreground hover:text-foreground" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-
-                  {savedCustomModelRows.length > 5 ? (
-                    <button
-                      type="button"
-                      className="mt-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
-                      onClick={() => setShowAllCustomModels((value) => !value)}
-                    >
-                      {showAllCustomModels
-                        ? messages.settings.models.customShowLess
-                        : messages.settings.models.customShowMore(savedCustomModelRows.length - 5)}
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          </SettingsRow>
-        </div>
-      </SettingsSection>
-
       <SettingsSection title="模型渠道接入">
         <div className="space-y-2">
           <SettingsRow
             title="服务渠道"
-            description="管理第三方模型 API 渠道接入，启用后可在对应提供商中使用这些渠道。"
+            description="管理第三方模型 API 渠道接入，启用网关后自动暴露对应模型。"
             status={
               <span className="text-[11px] text-muted-foreground">
-                ({enabledModelChannels.length}/{MODEL_CHANNELS.length} 已启用)
+                ({enabledChannelCount}/{MODEL_CHANNELS.length} 已启用)
               </span>
             }
           >
             <div className="mt-4 border-t border-border pt-4">
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 {MODEL_CHANNELS.map((channel) => {
-                  const isEnabled = enabledModelChannels.includes(channel.id);
+                  const serverChannel = gatewayConfigQuery.data?.channels?.find(
+                    (c) => c.id === channel.id,
+                  );
+                  const channelSecrets = channelSecretStatuses(channel.id, gatewaySecretStatuses);
+                  // A channel is enabled only when it has a key AND was
+                  // explicitly enabled. Defaults to disabled so the user can
+                  // edit base URL / models / mappings before turning it on.
+                  const channelEnabled = serverChannel ? serverChannel.enabled : false;
                   return (
-                    <div
+                    <GatewayChannelCard
                       key={channel.id}
-                      className="group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border/40 px-3 py-2.5 transition-colors hover:bg-[var(--sidebar-accent)]"
-                    >
-                      <div
-                        className="flex size-8 shrink-0 items-center justify-center rounded-md"
-                        style={{ backgroundColor: channel.iconColor }}
-                      >
-                        <svg
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="white"
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                          <path d="M2 17l10 5 10-5" />
-                          <path d="M2 12l10 5 10-5" />
-                        </svg>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-sm font-medium">
-                          <span>{channel.name}</span>
-                          {channel.balance ? (
-                            <span className="text-xs font-normal text-emerald-500">
-                              余额 {channel.balance}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="text-xs text-muted-foreground">{channel.subtitle}</div>
-                      </div>
-                      <Switch
-                        checked={isEnabled}
-                        onCheckedChange={(checked) => {
-                          const next = checked
-                            ? [...enabledModelChannels, channel.id]
-                            : enabledModelChannels.filter((id) => id !== channel.id);
-                          setEnabledModelChannels(next);
-                          writeEnabledModelChannels(next);
-                        }}
-                      />
-                    </div>
+                      channel={channel}
+                      serverChannel={serverChannel}
+                      secretsStatus={channelSecrets}
+                      isActive={gatewayConfigQuery.data?.activeChannelId === channel.id}
+                      enabled={channelEnabled}
+                      togglePending={updateGatewayConfigMutation.isPending}
+                      onToggle={(checked) => {
+                        const config = gatewayConfigQuery.data;
+                        if (!config || !serverChannel) return;
+                        if (checked && !channelIsComplete(serverChannel, channelSecrets)) {
+                          toastManager.add({
+                            title: "渠道配置未完成",
+                            description: "请先配置 Base URL、至少一个模型，以及该渠道要求的全部密钥。",
+                            type: "info",
+                          });
+                          return;
+                        }
+                        const channels = config.channels.map((c) =>
+                          c.id === channel.id ? { ...c, enabled: checked } : c,
+                        );
+                        const isCurrentActiveComplete = channels.some((candidate) => {
+                          if (candidate.id !== config.activeChannelId) return false;
+                          return (
+                            candidate.enabled &&
+                            channelIsComplete(
+                              candidate,
+                              channelSecretStatuses(candidate.id, gatewaySecretStatuses),
+                            )
+                          );
+                        });
+                        const nextActiveChannelId =
+                          checked && !isCurrentActiveComplete
+                            ? channel.id
+                            : !checked && config.activeChannelId === channel.id
+                              ? (channels.find((candidate) => {
+                                  if (!candidate.enabled) return false;
+                                  return channelIsComplete(
+                                    candidate,
+                                    channelSecretStatuses(candidate.id, gatewaySecretStatuses),
+                                  );
+                                })?.id ?? config.activeChannelId)
+                              : config.activeChannelId;
+                        updateGatewayConfigMutation.mutate({
+                          activeChannelId: nextActiveChannelId,
+                          channels,
+                        });
+                      }}
+                      onSetActive={() => {
+                        if (!serverChannel) return;
+                        updateGatewayConfigMutation.mutate({ activeChannelId: serverChannel.id });
+                      }}
+                      onSetSecret={(secretId, apiKey) => {
+                        setGatewayApiKeyMutation.mutate({
+                          channelId: channel.id,
+                          secretId,
+                          apiKey,
+                        });
+                      }}
+                      onRemoveSecret={(secretId) => {
+                        removeGatewayApiKeyMutation.mutate({
+                          channelId: channel.id,
+                          secretId,
+                        });
+                      }}
+                      onUpdateChannel={(patch) => {
+                        // deepMerge replaces arrays, so send the full channel
+                        // list with the patched channel merged in.
+                        const channels = (gatewayConfigQuery.data?.channels ?? []).map((c) =>
+                          c.id === channel.id ? { ...c, ...patch } : c,
+                        );
+                        updateGatewayConfigMutation.mutate({ channels });
+                      }}
+                    />
                   );
                 })}
               </div>
@@ -3715,6 +3656,453 @@ function SettingsRouteView() {
         defaultExpandedVersion={APP_VERSION}
       />
     </SidebarInset>
+  );
+}
+
+/**
+ * One gateway-channel row in the "模型渠道接入" section. The header carries the
+ * icon, name, status hint, an explicit configure button, and the enable toggle.
+ * Disabled channels are editable in the inline panel; enabled channels are
+ * locked until the user turns them off.
+ *
+ * This is the single place channel secrets are edited — there is no separate
+ * "API Keys" section anymore, so the channel list and its credentials stay in
+ * one place.
+ */
+function GatewayChannelCard(props: {
+  channel: ModelChannel;
+  serverChannel: GatewayChannelConfig | undefined;
+  secretsStatus: ReadonlyArray<{ secretId: string; hasApiKey: boolean }>;
+  isActive: boolean;
+  enabled: boolean;
+  togglePending: boolean;
+  onToggle: (enabled: boolean) => void;
+  onSetActive: () => void;
+  onSetSecret: (secretId: string, value: string) => void;
+  onRemoveSecret: (secretId: string) => void;
+  onUpdateChannel: (patch: Partial<GatewayChannelConfig>) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const totalSecrets = props.serverChannel?.secrets.length ?? 0;
+  const configuredSecrets = props.secretsStatus.filter((s) => s.hasApiKey).length;
+  const hasAllSecrets =
+    Boolean(props.serverChannel) && channelHasRequiredSecrets(props.serverChannel, props.secretsStatus);
+  const hasModel = channelHasModel(props.serverChannel);
+  const hasBaseUrl = Boolean(props.serverChannel?.baseUrl.trim());
+  const canEnable = Boolean(props.serverChannel) && hasAllSecrets && hasModel && hasBaseUrl;
+  // Once a channel is enabled, its config (base URL / models / mappings) is
+  // locked — the user must disable it first to avoid editing a live channel.
+  // This matches the workflow: disable → edit → re-enable.
+  const locked = props.enabled;
+  const hint = !props.serverChannel
+    ? "未加载"
+    : !hasBaseUrl
+      ? "未配置 Base URL"
+      : !hasModel
+        ? "未配置模型"
+        : hasAllSecrets
+          ? "配置已就绪"
+          : totalSecrets > 1
+            ? `${configuredSecrets}/${totalSecrets} 密钥已设置`
+            : "未配置密钥";
+  return (
+    <div className="overflow-hidden rounded-lg border border-border/40">
+      <div
+        role="button"
+        tabIndex={0}
+        className="group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 transition-colors hover:bg-[var(--sidebar-accent)]"
+        onClick={() => setExpanded((value) => !value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setExpanded((value) => !value);
+          }
+        }}
+      >
+        <div
+          className="flex size-8 shrink-0 items-center justify-center rounded-md"
+          style={{ backgroundColor: props.channel.iconColor }}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="white"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 2L2 7l10 5 10-5-10-5z" />
+            <path d="M2 17l10 5 10-5" />
+            <path d="M2 12l10 5 10-5" />
+          </svg>
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <span>{props.channel.name}</span>
+            {props.isActive ? (
+              <span className="rounded bg-[var(--sidebar-accent)] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                默认
+              </span>
+            ) : null}
+            {hint ? <span className="text-[11px] text-muted-foreground/70">{hint}</span> : null}
+          </div>
+          <div className="text-xs text-muted-foreground">{props.channel.subtitle}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground/60 transition-transform",
+              expanded && "rotate-90",
+            )}
+          />
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={!props.serverChannel}
+            onClick={(event) => {
+              event.stopPropagation();
+              setExpanded((value) => !value);
+            }}
+          >
+            {expanded ? "收起" : "配置"}
+          </Button>
+          <Switch
+            checked={props.enabled}
+            // Cannot enable a channel until its Base URL, model, and all secret
+            // slots are configured.
+            disabled={props.togglePending || (!props.enabled && !canEnable)}
+            onCheckedChange={(checked) => props.onToggle(checked)}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      </div>
+      {expanded && props.serverChannel ? (
+        <div className="space-y-4 border-t border-border/40 bg-[var(--color-background-elevated-secondary)]/30 px-3 py-3">
+          {locked ? (
+            <p className="text-[11px] text-muted-foreground/70">
+              渠道已启用，Base URL / 密钥 / 模型 / 映射已锁定。关闭开关后可修改。
+            </p>
+          ) : null}
+          <ChannelBaseUrlField
+            value={props.serverChannel.baseUrl}
+            disabled={locked}
+            onChange={(baseUrl) => props.onUpdateChannel({ baseUrl })}
+          />
+          {/* Secrets are always editable — the user updates keys even while a
+              channel is live (the new value takes effect on the next request). */}
+          <ChannelSecretsRow
+            channel={props.serverChannel}
+            secretsStatus={props.secretsStatus}
+            disabled={locked}
+            onSetSecret={props.onSetSecret}
+            onRemoveSecret={props.onRemoveSecret}
+          />
+          <ChannelModelsEditor
+            models={editableChannelModels(props.serverChannel)}
+            disabled={locked}
+            onChange={(models) => props.onUpdateChannel({ models, model: models[0]?.id ?? "" })}
+          />
+          <ChannelAgentMappingsEditor
+            models={editableChannelModels(props.serverChannel)}
+            mappings={props.serverChannel.agentMappings}
+            disabled={locked}
+            onChange={(agentMappings) => props.onUpdateChannel({ agentMappings })}
+          />
+          {!props.isActive ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={!props.enabled || !canEnable}
+              onClick={props.onSetActive}
+            >
+              设为默认渠道
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Editable Base URL field for a channel. */
+function ChannelBaseUrlField(props: {
+  value: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-medium text-muted-foreground">Base URL</label>
+      <Input
+        value={props.value}
+        disabled={props.disabled}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder="https://api.example.com/v1"
+        className="h-8 text-xs"
+      />
+    </div>
+  );
+}
+
+/** Add/remove models for a channel. The first entry is the default. */
+function ChannelModelsEditor(props: {
+  models: ReadonlyArray<{ id: string; label: string }>;
+  disabled?: boolean;
+  onChange: (models: Array<{ id: string; label: string }>) => void;
+}) {
+  const [newId, setNewId] = useState("");
+  const addModel = () => {
+    const trimmed = newId.trim();
+    if (!trimmed) return;
+    if (props.models.some((m) => m.id === trimmed)) return;
+    props.onChange([...props.models, { id: trimmed, label: trimmed }]);
+    setNewId("");
+  };
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-medium text-muted-foreground">模型</label>
+        <span className="text-[11px] text-muted-foreground/70">
+          {props.models.length === 0 ? "使用默认模型" : `${props.models.length} 个模型`}
+        </span>
+      </div>
+      {props.models.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground/60">
+          未配置模型，将使用渠道默认模型字段。
+        </p>
+      ) : (
+        <div className="space-y-1">
+          {props.models.map((model, index) => (
+            <div key={model.id} className="flex items-center gap-2">
+              <span className="flex-1 truncate font-mono text-xs text-foreground">{model.id}</span>
+              {index === 0 ? (
+                <span className="rounded bg-[var(--sidebar-accent)] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  默认
+                </span>
+              ) : null}
+              <button
+                type="button"
+                disabled={props.disabled}
+                className="rounded p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                onClick={() => {
+                  if (props.disabled) return;
+                  // Removing the default promotes the next entry; if the list
+                  // becomes empty the channel falls back to its `model` field.
+                  if (index === 0) {
+                    props.onChange(props.models.slice(1));
+                  } else {
+                    props.onChange(props.models.filter((_, i) => i !== index));
+                  }
+                }}
+                aria-label={`移除 ${model.id}`}
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <Input
+          value={newId}
+          disabled={props.disabled}
+          onChange={(e) => setNewId(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addModel();
+            }
+          }}
+          placeholder="模型 id，如 deepseek-reasoner"
+          className="h-7 flex-1 text-xs"
+        />
+        <Button size="xs" variant="outline" onClick={addModel} disabled={props.disabled || !newId.trim()}>
+          添加
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Per-agent (Codex / Claude Code) model mapping for a channel. */
+function ChannelAgentMappingsEditor(props: {
+  models: ReadonlyArray<{ id: string; label: string }>;
+  mappings: { readonly codex?: string | undefined; readonly claude?: string | undefined };
+  disabled?: boolean;
+  onChange: (mappings: { codex?: string; claude?: string }) => void;
+}) {
+  const options = props.models;
+  // Builds a mappings object that omits empty values, so we never assign
+  // `undefined` to an optional field (forbidden by exactOptionalPropertyTypes).
+  const buildMappings = (agent: "codex" | "claude", value: string): {
+    codex?: string;
+    claude?: string;
+  } => {
+    const trimmed = value.trim();
+    const next: { codex?: string; claude?: string } = {};
+    if (agent !== "codex" && props.mappings.codex) next.codex = props.mappings.codex;
+    if (agent !== "claude" && props.mappings.claude) next.claude = props.mappings.claude;
+    if (trimmed) next[agent] = trimmed;
+    return next;
+  };
+  const renderSelect = (
+    agent: "codex" | "claude",
+    label: string,
+    description: string,
+  ) => {
+    const current = props.mappings[agent];
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-muted-foreground">{label}</label>
+          {current ? (
+            <button
+              type="button"
+              className="text-[11px] text-muted-foreground/70 hover:text-foreground"
+              onClick={() => props.onChange(buildMappings(agent, ""))}
+            >
+              清除
+            </button>
+          ) : null}
+        </div>
+        <select
+          value={current ?? ""}
+          disabled={props.disabled}
+          onChange={(e) => {
+            props.onChange(buildMappings(agent, e.target.value));
+          }}
+          className="h-8 w-full rounded-md border border-border/40 bg-transparent px-2 text-xs text-foreground disabled:opacity-50"
+        >
+          <option value="">使用渠道默认模型</option>
+          {options.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.label}
+            </option>
+          ))}
+        </select>
+        <p className="text-[10px] text-muted-foreground/60">{description}</p>
+      </div>
+    );
+  };
+  return (
+    <div className="space-y-2">
+      <label className="text-xs font-medium text-muted-foreground">Agent 模型映射</label>
+      <p className="text-[11px] text-muted-foreground/70">
+        为每个 Agent 单独指定该渠道使用的模型。Codex 走 OpenAI 协议，Claude Code 走 Anthropic 协议。
+      </p>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {renderSelect("codex", "Codex", "注入到 Codex config.toml 的 model 字段")}
+        {renderSelect("claude", "Claude Code", "通过 ANTHROPIC_BASE_URL 路由时的模型")}
+      </div>
+    </div>
+  );
+}
+
+function ChannelSecretsRow(props: {
+  channel: GatewayChannelConfig;
+  secretsStatus: ReadonlyArray<{ secretId: string; hasApiKey: boolean }>;
+  disabled?: boolean;
+  onSetSecret: (secretId: string, value: string) => void;
+  onRemoveSecret: (secretId: string) => void;
+}) {
+  if (props.channel.secrets.length === 0) {
+    return (
+      <div className="rounded-md border border-border/40 px-3 py-2 text-xs text-muted-foreground">
+        {props.channel.name}：该渠道未声明任何密钥。
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      {props.channel.secrets.map((def) => {
+        const status = props.secretsStatus.find((s) => s.secretId === def.id);
+        const hasApiKey = status?.hasApiKey ?? false;
+        return (
+          <SecretSlotRow
+            key={def.id}
+            label={def.label}
+            sensitive={def.sensitive}
+            hasApiKey={hasApiKey}
+            disabled={props.disabled}
+            onSet={(value) => props.onSetSecret(def.id, value)}
+            onRemove={() => props.onRemoveSecret(def.id)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function SecretSlotRow(props: {
+  label: string;
+  sensitive: boolean;
+  hasApiKey: boolean;
+  disabled?: boolean;
+  onSet: (value: string) => void;
+  onRemove: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const inputType = props.sensitive ? "password" : "text";
+  const placeholder = props.sensitive ? "粘贴密钥…" : "粘贴值…";
+  return (
+    <div className="flex items-center justify-between rounded-md border border-border/40 px-3 py-2">
+      <div className="flex min-w-0 flex-col">
+        <span className="text-sm font-medium">{props.label}</span>
+        <span className="text-[11px] text-muted-foreground/70">
+          {props.hasApiKey ? "已设置" : "未设置"}
+        </span>
+      </div>
+      {editing ? (
+        <div className="flex items-center gap-2">
+          <Input
+            type={inputType}
+            value={value}
+            disabled={props.disabled}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholder}
+            className="h-7 w-48 text-xs"
+          />
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.disabled}
+            onClick={() => {
+              if (value.trim()) {
+                props.onSet(value.trim());
+              }
+              setEditing(false);
+              setValue("");
+            }}
+          >
+            保存
+          </Button>
+          <Button size="xs" variant="outline" onClick={() => setEditing(false)}>
+            取消
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.disabled}
+            onClick={() => setEditing(true)}
+          >
+            {props.hasApiKey ? "更新" : "设置"}
+          </Button>
+          {props.hasApiKey ? (
+            <Button size="xs" variant="outline" disabled={props.disabled} onClick={props.onRemove}>
+              清除
+            </Button>
+          ) : null}
+        </div>
+      )}
+    </div>
   );
 }
 

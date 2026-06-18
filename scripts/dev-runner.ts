@@ -464,8 +464,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
     // runs `dev:win` — we split into two processes: turbo drives contracts +
     // Vite, and Node.js runs the pre-built server directly.
     const useWinSplit =
-      input.mode === "dev:win" ||
-      (input.mode === "dev" && process.platform === "win32");
+      input.mode === "dev:win" || (input.mode === "dev" && process.platform === "win32");
 
     if (useWinSplit) {
       const pathService = yield* Path.Path;

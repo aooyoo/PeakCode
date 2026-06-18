@@ -8,6 +8,8 @@ import {
   WS_METHODS,
   WsRpcError,
   WsRpcGroup,
+  type GatewayChannelId,
+  type GatewaySecretStatusResult,
   type GitActionProgressEvent,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
@@ -23,6 +25,7 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import { authErrorResponse, makeEffectAuthRequest } from "./auth/http";
 import { ServerAuth } from "./auth/Services/ServerAuth";
+import { ServerSecretStore } from "./auth/Services/ServerSecretStore";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { ServerConfig } from "./config";
@@ -39,6 +42,9 @@ import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryS
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
+import type { AgentProvisionId } from "@peakcode/contracts";
+import { getAllAgentStatuses, installAgentConfig, type AgentProvisionContext } from "./agentProvisioner";
+import { gatewaySecretName } from "./gateway";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { listLocalUserSkills } from "./localSkills";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment";
@@ -193,6 +199,7 @@ export const makeWsRpcLayer = () =>
       const lifecycleEvents = yield* ServerLifecycleEvents;
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
+      const secretStore = yield* ServerSecretStore;
       const serverSettings = yield* ServerSettingsService;
       const terminalManager = yield* TerminalManager;
       const workspaceEntries = yield* WorkspaceEntries;
@@ -340,6 +347,71 @@ export const makeWsRpcLayer = () =>
 
       const rpcEffect = <A, E, R>(effect: Effect.Effect<A, E, R>, fallbackMessage: string) =>
         effect.pipe(Effect.mapError((cause) => toWsRpcError(cause, fallbackMessage)));
+
+      /**
+       * Reads the populated-state of every secret slot declared across every
+       * gateway channel. Each channel may declare multiple slots (e.g. MiMo's
+       * three cookies), so this iterates channel × secretDef and reports
+       * `{channelId, secretId, hasApiKey}` per slot. Shared by the three
+       * gateway secret RPCs to avoid repeating the nested Effect.all.
+       */
+      const collectGatewaySecretStatus = () =>
+        serverSettings.getSettings.pipe(
+          Effect.flatMap((s) =>
+            Effect.all(
+              s.gateway.channels.flatMap((ch) =>
+                ch.secrets.map((def) =>
+                  secretStore.get(gatewaySecretName(ch.id, def.id)).pipe(
+                    Effect.map(
+                      (value): GatewaySecretStatusResult["secrets"][number] => ({
+                        channelId: ch.id,
+                        secretId: def.id,
+                        hasApiKey: value !== null && value.byteLength > 0,
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Effect.map((secrets): GatewaySecretStatusResult => ({ secrets })),
+        );
+
+      /**
+       * Re-writes the gateway config into every agent that is already
+       * installed. Called after any gateway config/secret change so the agent
+       * files stay in sync without the user having to click "写入" again.
+       *
+       * Failures are swallowed (Effect.catchAll → Effect.void) because a
+       * missing/locked agent file must not block the gateway update itself —
+       * the user will see stale status in the Agent Setup panel and can
+       * re-install manually.
+       */
+      const syncInstalledAgents = () =>
+        Effect.gen(function* () {
+          const settings = yield* serverSettings.getSettings;
+          const ctx: AgentProvisionContext = {
+            gateway: settings.gateway,
+            port: config.port,
+            env: process.env,
+          };
+          const statuses = yield* getAllAgentStatuses(ctx);
+          // Only re-write agents that were previously installed — we don't
+          // want to surprise-install into agents the user hasn't opted into.
+          const installed = statuses.filter((s) => s.installed);
+          if (installed.length === 0) return;
+          yield* Effect.all(
+            installed.map((s) =>
+              installAgentConfig(s.id, ctx).pipe(
+                // Best-effort: a failed re-sync (locked file, permission, etc.)
+                // must not break the gateway update. The stale status shows up
+                // in the Agent Setup panel and the user can re-install manually.
+                Effect.orElseSucceed(() => undefined),
+              ),
+            ),
+            { concurrency: "unbounded" },
+          );
+        });
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -722,6 +794,75 @@ export const makeWsRpcLayer = () =>
           rpcEffect(
             Effect.tryPromise(() => listLocalUserSkills()),
             "Failed to list local skills",
+          ),
+
+        [WS_METHODS.gatewayGetConfig]: () =>
+          rpcEffect(
+            serverSettings.getSettings.pipe(Effect.map((s) => s.gateway)),
+            "Failed to get gateway config",
+          ),
+
+        [WS_METHODS.gatewayUpdateConfig]: (patch) =>
+          rpcEffect(
+            serverSettings
+              .updateSettings({ gateway: patch })
+              .pipe(
+                Effect.tap(() =>
+                  // After saving the new gateway config, re-sync it into every
+                  // already-installed agent so their local config files reflect
+                  // the change immediately. Best-effort: failures are swallowed.
+                  syncInstalledAgents(),
+                ),
+                Effect.map((s) => s.gateway),
+              ),
+            "Failed to update gateway config",
+          ),
+
+        [WS_METHODS.gatewayGetSecretStatus]: () =>
+          rpcEffect(collectGatewaySecretStatus(), "Failed to get gateway secret status"),
+
+        [WS_METHODS.gatewaySetApiKey]: (input) =>
+          rpcEffect(
+            secretStore
+              .set(
+                gatewaySecretName(input.channelId, input.secretId),
+                new TextEncoder().encode(input.apiKey),
+              )
+              .pipe(
+                Effect.tap(() => syncInstalledAgents()),
+                Effect.flatMap(() => collectGatewaySecretStatus()),
+              ),
+            "Failed to set gateway secret",
+          ),
+
+        [WS_METHODS.gatewayRemoveApiKey]: (input) =>
+          rpcEffect(
+            secretStore
+              .remove(gatewaySecretName(input.channelId, input.secretId))
+              .pipe(
+                Effect.tap(() => syncInstalledAgents()),
+                Effect.flatMap(() => collectGatewaySecretStatus()),
+              ),
+            "Failed to remove gateway secret",
+          ),
+        [WS_METHODS.agentGetConfigStatus]: () =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings;
+              const ctx = { gateway: settings.gateway, port: config.port };
+              return yield* getAllAgentStatuses(ctx);
+            }).pipe(Effect.map((agents) => ({ agents }))),
+            "Failed to read agent config status",
+          ),
+        [WS_METHODS.agentInstallConfig]: (input: { agent: AgentProvisionId }) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings;
+              const ctx = { gateway: settings.gateway, port: config.port };
+              yield* installAgentConfig(input.agent, ctx);
+              return yield* getAllAgentStatuses(ctx);
+            }).pipe(Effect.map((agents) => ({ agents }))),
+            "Failed to install agent config",
           ),
       });
     }),

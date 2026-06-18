@@ -1,22 +1,23 @@
 // FILE: ModelChannelPicker.tsx
 // Purpose: Renders a service-channel (model-gateway) list inside the provider
 //          picker so users can toggle third-party API channels on/off.
+//          Channel state is read from and written to the server-authoritative
+//          gateway config via NativeApi.gateway.
 // Layer: Chat composer presentation
 
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "~/lib/utils";
 import {
   MenuGroup,
   MenuGroupLabel,
-  MenuItem,
   MenuSeparator,
   MenuSub,
   MenuSubPopup,
   MenuSubTrigger,
 } from "../ui/menu";
-import { useLocalStorage } from "~/hooks/useLocalStorage";
-import * as Schema from "effect/Schema";
 import { ChevronRightIcon } from "~/lib/icons";
+import { gatewayConfigQueryOptions } from "~/lib/serverReactQuery";
 
 // ------------------------------------------------------------------
 // Data model
@@ -28,7 +29,8 @@ export type ModelChannelId =
   | "volcano"
   | "tongyi"
   | "kimi"
-  | "minimax";
+  | "minimax"
+  | "mimo";
 
 export type ModelChannel = {
   readonly id: ModelChannelId;
@@ -37,10 +39,7 @@ export type ModelChannel = {
   readonly subtitle: string;
   readonly subtitleEn: string;
   readonly icon: React.ReactNode;
-  readonly balance?: string;
 };
-
-const ChannelSlugs = Schema.Array(Schema.String);
 
 const CHANNELS: ReadonlyArray<ModelChannel> = [
   {
@@ -49,7 +48,6 @@ const CHANNELS: ReadonlyArray<ModelChannel> = [
     nameEn: "DeepSeek",
     subtitle: "深度求索 · DeepSeek",
     subtitleEn: "DeepSeek",
-    balance: "¥177.52",
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="shrink-0">
         <rect width="24" height="24" rx="6" fill="#4D6BFA" />
@@ -63,7 +61,6 @@ const CHANNELS: ReadonlyArray<ModelChannel> = [
     nameEn: "SiliconFlow",
     subtitle: "硅基流动 · SiliconFlow",
     subtitleEn: "SiliconFlow",
-    balance: "¥110.87",
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="shrink-0">
         <rect width="24" height="24" rx="6" fill="#6366F1" />
@@ -103,7 +100,6 @@ const CHANNELS: ReadonlyArray<ModelChannel> = [
     nameEn: "Kimi",
     subtitle: "月之暗面 · Kimi",
     subtitleEn: "Moonshot AI",
-    balance: "¥13.96",
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="shrink-0">
         <rect width="24" height="24" rx="6" fill="#1F2937" />
@@ -120,7 +116,31 @@ const CHANNELS: ReadonlyArray<ModelChannel> = [
     icon: (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="shrink-0">
         <rect width="24" height="24" rx="6" fill="#10B981" />
-        <path d="M7 14C7 10 9 8 12 8C15 8 17 10 17 14" stroke="white" strokeWidth="2" strokeLinecap="round" />
+        <path
+          d="M7 14C7 10 9 8 12 8C15 8 17 10 17 14"
+          stroke="white"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+      </svg>
+    ),
+  },
+  {
+    id: "mimo",
+    name: "小米 MiMo",
+    nameEn: "MiMo",
+    subtitle: "小米 · MiMo",
+    subtitleEn: "Xiaomi MiMo",
+    icon: (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="shrink-0">
+        <rect width="24" height="24" rx="6" fill="#FF6900" />
+        <path
+          d="M8 8L12 13L16 8M8 16L12 11L16 16"
+          stroke="white"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       </svg>
     ),
   },
@@ -130,68 +150,45 @@ const CHANNELS: ReadonlyArray<ModelChannel> = [
 // Sub-components
 // ------------------------------------------------------------------
 
-function ChannelToggle({
-  enabled,
-  onChange,
-}: {
-  enabled: boolean;
-  onChange: (next: boolean) => void;
-}) {
+function ChannelStatus({ enabled }: { enabled: boolean }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onChange(!enabled);
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
+    <span
+      aria-label={enabled ? "已启用" : "未启用"}
       className={cn(
-        "relative ms-auto inline-flex h-[18px] w-8 shrink-0 cursor-pointer items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-        enabled ? "bg-[hsl(var(--primary))]" : "bg-muted-foreground/25"
+        "relative ms-auto inline-flex h-[18px] w-8 shrink-0 items-center rounded-full transition-colors",
+        enabled ? "bg-[hsl(var(--primary))]" : "bg-muted-foreground/25",
       )}
     >
       <span
         className={cn(
           "pointer-events-none block size-3.5 rounded-full bg-white shadow-sm transition-transform",
-          enabled ? "translate-x-[13px]" : "translate-x-[2px]"
+          enabled ? "translate-x-[13px]" : "translate-x-[2px]",
         )}
       />
-    </button>
+    </span>
   );
 }
 
 function ChannelListItem({
   channel,
   enabled,
-  onToggle,
 }: {
   channel: ModelChannel;
   enabled: boolean;
-  onToggle: () => void;
 }) {
   return (
     <div
       className={cn(
         "flex items-center gap-3 rounded-md px-2 py-2 transition-colors",
-        "hover:bg-[var(--color-background-elevated-secondary)]"
+        "hover:bg-[var(--color-background-elevated-secondary)]",
       )}
     >
       {channel.icon}
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="flex items-center gap-2 text-sm font-medium">
-          {channel.name}
-          {channel.balance ? (
-            <span className="text-xs font-normal text-emerald-500">
-              余额 {channel.balance}
-            </span>
-          ) : null}
-        </span>
+        <span className="flex items-center gap-2 text-sm font-medium">{channel.name}</span>
         <span className="text-xs text-muted-foreground">{channel.subtitle}</span>
       </div>
-      <ChannelToggle enabled={enabled} onChange={onToggle} />
+      <ChannelStatus enabled={enabled} />
     </div>
   );
 }
@@ -201,27 +198,9 @@ function ChannelListItem({
 // ------------------------------------------------------------------
 
 export const ModelChannelSection = memo(function ModelChannelSection() {
-  const [enabledIds, setEnabledIds] = useLocalStorage(
-    "peakcode:enabled-model-channels:v1",
-    ["deepseek", "siliconflow", "volcano", "tongyi", "kimi", "minimax"],
-    ChannelSlugs
-  );
-
-  const enabledSet = useMemo(() => new Set(enabledIds), [enabledIds]);
-
-  const toggleChannel = useCallback(
-    (id: ModelChannelId) => {
-      setEnabledIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        return Array.from(next);
-      });
-    },
-    [setEnabledIds]
-  );
-
-  const enabledCount = enabledSet.size;
+  const gatewayConfigQuery = useQuery(gatewayConfigQueryOptions());
+  const serverChannels = gatewayConfigQuery.data?.channels ?? [];
+  const enabledCount = serverChannels.filter((ch) => ch.enabled).length;
   const totalCount = CHANNELS.length;
 
   return (
@@ -229,22 +208,23 @@ export const ModelChannelSection = memo(function ModelChannelSection() {
       <MenuSeparator />
       <MenuGroup>
         <MenuGroupLabel className="flex items-center justify-between px-2 py-1.5">
-          <span className="font-medium text-muted-foreground text-xs">
-            服务渠道
-          </span>
+          <span className="font-medium text-muted-foreground text-xs">服务渠道</span>
           <span className="text-[11px] text-muted-foreground/70">
             ({enabledCount}/{totalCount} 已启用)
           </span>
         </MenuGroupLabel>
         <div className="space-y-0.5 px-1 py-1">
-          {CHANNELS.map((channel) => (
-            <ChannelListItem
-              key={channel.id}
-              channel={channel}
-              enabled={enabledSet.has(channel.id)}
-              onToggle={() => toggleChannel(channel.id)}
-            />
-          ))}
+          {CHANNELS.map((channel) => {
+            const serverChannel = serverChannels.find((ch) => ch.id === channel.id);
+            const isEnabled = serverChannel?.enabled ?? false;
+            return (
+              <ChannelListItem
+                key={channel.id}
+                channel={channel}
+                enabled={isEnabled}
+              />
+            );
+          })}
         </div>
       </MenuGroup>
     </>
@@ -262,38 +242,25 @@ export const ModelChannelPicker = memo(function ModelChannelPicker({
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
-  const isOpen = open ?? uncontrolledOpen;
-  const setIsOpen = useCallback(
-    (next: boolean) => {
-      if (open === undefined) setUncontrolledOpen(next);
-      onOpenChange?.(next);
-    },
-    [open, onOpenChange]
-  );
-
-  const [enabledIds] = useLocalStorage(
-    "peakcode:enabled-model-channels:v1",
-    ["deepseek", "siliconflow", "volcano", "tongyi", "kimi", "minimax"],
-    ChannelSlugs
-  );
+  const gatewayConfigQuery = useQuery(gatewayConfigQueryOptions());
+  const enabledCount = (gatewayConfigQuery.data?.channels ?? []).filter((ch) => ch.enabled).length;
 
   return (
-    <MenuSub open={isOpen} onOpenChange={setIsOpen}>
+    <MenuSub open={open} onOpenChange={onOpenChange}>
       <MenuSubTrigger
         className="flex items-center gap-2 px-2 py-1.5 text-sm"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => onOpenChange?.(!open)}
       >
         <ChevronRightIcon
           aria-hidden="true"
           className={cn(
             "size-4 shrink-0 text-muted-foreground/60 transition-transform",
-            isOpen && "rotate-90"
+            open && "rotate-90",
           )}
         />
         <span className="flex-1">服务渠道</span>
         <span className="text-[11px] text-muted-foreground/70">
-          ({enabledIds.length}/{CHANNELS.length} 已启用)
+          ({enabledCount}/{CHANNELS.length} 已启用)
         </span>
       </MenuSubTrigger>
       <MenuSubPopup className="[--available-height:min(24rem,70vh)] w-72">

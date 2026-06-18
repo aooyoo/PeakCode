@@ -41,7 +41,7 @@ import {
   type ServerVoiceTranscriptionResult,
 } from "@peakcode/contracts";
 import { getModelSelectionBooleanOptionValue, normalizeModelSlug } from "@peakcode/shared/model";
-import { Effect, ServiceMap } from "effect";
+import { Effect, Option, ServiceMap } from "effect";
 
 import {
   formatCodexCliUpgradeMessage,
@@ -50,6 +50,10 @@ import {
 } from "./provider/codexCliVersion";
 import { isNonFatalCodexErrorMessage } from "./codexErrorClassification.ts";
 import { buildCodexProcessEnv } from "./codexProcessEnv.ts";
+import { ServerConfig } from "./config";
+import { ServerSettingsService } from "./serverSettings";
+import { readPersistedServerRuntimeState } from "./serverRuntimeState";
+import type { GatewayConfig } from "@peakcode/contracts";
 import { transcribeVoiceWithChatGptSession } from "./voiceTranscription.ts";
 
 type PendingRequestKey = string;
@@ -677,6 +681,51 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     this.runPromise = services ? Effect.runPromiseWith(services) : Effect.runPromise;
   }
 
+  /**
+   * Resolves gateway overlay inputs (gateway config + actual listening port) for
+   * the Codex config overlay. Returns undefined for both when the gateway is
+   * disabled or the values cannot be read, so callers can pass the result
+   * straight through to buildCodexProcessEnv without gating.
+   *
+   * Gateway overlay is best-effort: if settings or runtime state cannot be read,
+   * we silently skip injection rather than blocking Codex startup.
+   */
+  private async resolveGatewayOverlay(): Promise<{
+    gateway?: GatewayConfig;
+    gatewayPort?: number;
+  }> {
+    // Gateway overlay is best-effort: any failure (settings read, runtime state,
+    // service missing) falls back to "no overlay", so Codex still starts normally.
+    // The runtime ServiceMap supplies ServerSettingsService/ServerConfig even though
+    // this.runPromise's static signature requires R=never; the context cast is safe
+    // because the constructor's services always include these core services.
+    // Effect.option turns any error into None, satisfying the never-error contract.
+    const program = Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const settings = yield* serverSettings.getSettings;
+      const config = yield* ServerConfig;
+      const runtimeState = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+      const port = Option.isSome(runtimeState) ? runtimeState.value.port : config.port;
+      return { gateway: settings.gateway, port } as const;
+    }).pipe(Effect.option) as Effect.Effect<
+      Option.Option<{ readonly gateway: GatewayConfig; readonly port: number }>,
+      never,
+      never
+    >;
+    const result = (await this.runPromise(program)) as Option.Option<{
+      readonly gateway: GatewayConfig;
+      readonly port: number;
+    }>;
+    const resolved = result as Option.Option<{
+      readonly gateway: GatewayConfig;
+      readonly port: number;
+    }>;
+    if (Option.isNone(resolved) || !resolved.value.gateway.enabled) {
+      return {};
+    }
+    return { gateway: resolved.value.gateway, gatewayPort: resolved.value.port };
+  }
+
   async startSession(input: CodexAppServerStartSessionInput): Promise<ProviderSession> {
     const threadId = input.threadId;
     const now = new Date().toISOString();
@@ -709,10 +758,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
+      const gatewayOverlay = await this.resolveGatewayOverlay();
       const child = spawn(codexBinaryPath, ["app-server"], {
         cwd: resolvedCwd,
         env: buildCodexProcessEnv({
           ...(codexHomePath ? { homePath: codexHomePath } : {}),
+          ...gatewayOverlay,
         }),
         stdio: ["pipe", "pipe", "pipe"],
         shell: process.platform === "win32",
@@ -989,7 +1040,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     };
 
     if (runtimeModeChanged) {
-      Object.assign(turnStartParams, mapCodexRuntimeModeToTurnOverrides(context.session.runtimeMode));
+      Object.assign(
+        turnStartParams,
+        mapCodexRuntimeModeToTurnOverrides(context.session.runtimeMode),
+      );
     }
 
     if (normalizedModel && modelChanged) {
@@ -1354,10 +1408,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
+      const gatewayOverlay = await this.resolveGatewayOverlay();
       const child = spawn(codexBinaryPath, ["app-server"], {
         cwd: resolvedCwd,
         env: buildCodexProcessEnv({
           ...(codexHomePath ? { homePath: codexHomePath } : {}),
+          ...gatewayOverlay,
         }),
         stdio: ["pipe", "pipe", "pipe"],
         shell: process.platform === "win32",
@@ -1917,9 +1973,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       binaryPath: "codex",
       cwd: normalizedCwd,
     });
+    const gatewayOverlay = await this.resolveGatewayOverlay();
     const child = spawn("codex", ["app-server"], {
       cwd: normalizedCwd,
-      env: buildCodexProcessEnv(),
+      env: buildCodexProcessEnv(gatewayOverlay),
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32",
     });
