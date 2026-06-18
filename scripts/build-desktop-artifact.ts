@@ -675,13 +675,16 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
 
   if (!options.skipBuild) {
     yield* Effect.log("[desktop-artifact] Building desktop/server/web artifacts...");
+    // Full workspace build (all packages) — NOT just build:desktop, which
+    // skips contracts/shared/web. Using a partial build here was the root
+    // cause of stale-code-in-DMG bugs: the server/desktop dist was current
+    // but contracts/web were cached from a previous run.
     yield* runCommand(
       ChildProcess.make({
         cwd: repoRoot,
         ...commandOutputOptions(options.verbose),
-        // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
         shell: process.platform === "win32",
-      })`bun run build:desktop`,
+      })`bun run build`,
     );
   }
 
