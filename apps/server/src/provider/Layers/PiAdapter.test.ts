@@ -17,11 +17,7 @@ function makePiModel(input: {
   };
 }
 
-function makeAvailableModel(input: {
-  provider: string;
-  id: string;
-  name?: string;
-}): Model<Api> {
+function makeAvailableModel(input: { provider: string; id: string; name?: string }): Model<Api> {
   return {
     id: input.id,
     name: input.name ?? input.id,

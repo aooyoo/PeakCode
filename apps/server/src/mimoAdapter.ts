@@ -108,10 +108,14 @@ export function mimoBuildQuery(messages: unknown): string {
  * Tool/function-calling is not supported by the upstream, so `tools` and
  * related fields are intentionally dropped.
  */
-export function mimoBuildRequestBody(chatPayload: Record<string, unknown>): Record<string, unknown> {
+export function mimoBuildRequestBody(
+  chatPayload: Record<string, unknown>,
+): Record<string, unknown> {
   const reasoningEffort = chatPayload.reasoning_effort;
   const enableThinking =
-    typeof reasoningEffort === "string" ? reasoningEffort.trim().length > 0 : Boolean(reasoningEffort);
+    typeof reasoningEffort === "string"
+      ? reasoningEffort.trim().length > 0
+      : Boolean(reasoningEffort);
   return {
     msgId: mimoId(),
     conversationId: mimoId(),
@@ -311,7 +315,12 @@ export async function mimoResponseToChatResponse(
 export function mimoStreamToChatStream(response: Response, requestedModel: string): Response {
   if (!response.body) {
     return Response.json(
-      { error: { type: "peakcode_gateway_error", message: "MiMo upstream returned an empty stream." } },
+      {
+        error: {
+          type: "peakcode_gateway_error",
+          message: "MiMo upstream returned an empty stream.",
+        },
+      },
       { status: 502 },
     );
   }
@@ -331,7 +340,8 @@ export function mimoStreamToChatStream(response: Response, requestedModel: strin
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const enqueue = (payload: unknown) => controller.enqueue(encoder.encode(sseDataLine(payload)));
+      const enqueue = (payload: unknown) =>
+        controller.enqueue(encoder.encode(sseDataLine(payload)));
       // Opening role delta.
       enqueue(baseChunk({ role: "assistant" }, null));
 

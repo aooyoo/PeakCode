@@ -15,7 +15,11 @@ import {
 } from "node:fs";
 import path from "node:path";
 
-import { resolveAgentModel, resolveGatewayActiveChannel, type GatewayConfig } from "@peakcode/contracts";
+import {
+  resolveAgentModel,
+  resolveGatewayActiveChannel,
+  type GatewayConfig,
+} from "@peakcode/contracts";
 
 import { readActiveCodexProviderEnvKey } from "@peakcode/shared/codexConfig";
 import {

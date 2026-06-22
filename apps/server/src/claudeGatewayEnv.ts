@@ -11,7 +11,11 @@
 // a real Anthropic endpoint, ...). When the gateway is disabled we leave the
 // caller's env untouched so Claude Code uses the user's own credentials.
 
-import { resolveAgentModel, resolveGatewayActiveChannel, type GatewayConfig } from "@peakcode/contracts";
+import {
+  resolveAgentModel,
+  resolveGatewayActiveChannel,
+  type GatewayConfig,
+} from "@peakcode/contracts";
 import { PEAKCODE_GATEWAY_CLIENT_API_KEY } from "./gateway";
 
 /** Sentinel token the gateway accepts for SDK-routed requests. */
@@ -51,7 +55,9 @@ export function resolveClaudeGatewayModel(gateway: GatewayConfig | undefined): s
  * Returns true when the Claude SDK should be redirected through the gateway.
  * The gateway must be enabled AND have at least one channel configured.
  */
-export function isClaudeGatewayActive(gateway: GatewayConfig | undefined): gateway is GatewayConfig {
+export function isClaudeGatewayActive(
+  gateway: GatewayConfig | undefined,
+): gateway is GatewayConfig {
   return gateway !== undefined && gateway.enabled && resolveGatewayActiveChannel(gateway) !== null;
 }
 

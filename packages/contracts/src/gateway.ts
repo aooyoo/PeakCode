@@ -266,7 +266,11 @@ export function resolveChannelDefaultModel(channel: GatewayChannelConfig): strin
 }
 
 export function isGatewayChannelRoutable(channel: GatewayChannelConfig): boolean {
-  return channel.enabled && Boolean(channel.baseUrl.trim()) && resolveChannelDefaultModel(channel) !== null;
+  return (
+    channel.enabled &&
+    Boolean(channel.baseUrl.trim()) &&
+    resolveChannelDefaultModel(channel) !== null
+  );
 }
 
 export function resolveGatewayActiveChannel(config: GatewayConfig): GatewayChannelConfig | null {

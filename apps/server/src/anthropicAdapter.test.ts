@@ -17,13 +17,19 @@ describe("anthropicToOpenAIChat", () => {
       system: "You are helpful.",
       messages: [{ role: "user", content: "hi" }],
     });
-    expect((chat.messages as unknown[])[0]).toEqual({ role: "system", content: "You are helpful." });
+    expect((chat.messages as unknown[])[0]).toEqual({
+      role: "system",
+      content: "You are helpful.",
+    });
   });
 
   it("joins a system content-block array into one system message", () => {
     const chat = anthropicToOpenAIChat({
       model: "m",
-      system: [{ type: "text", text: "rule one" }, { type: "text", text: "rule two" }],
+      system: [
+        { type: "text", text: "rule one" },
+        { type: "text", text: "rule two" },
+      ],
       messages: [{ role: "user", content: "hi" }],
     });
     expect((chat.messages as unknown[])[0]).toEqual({
@@ -61,7 +67,11 @@ describe("anthropicToOpenAIChat", () => {
     const assistant = (chat.messages as unknown[])[0] as {
       role: string;
       content: string | null;
-      tool_calls: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+      tool_calls: Array<{
+        id: string;
+        type: string;
+        function: { name: string; arguments: string };
+      }>;
     };
     expect(assistant.role).toBe("assistant");
     expect(assistant.content).toBe("calling tool");
@@ -140,9 +150,7 @@ describe("openAIChatToAnthropicMessages", () => {
   it("converts text content into a text block with end_turn stop_reason", async () => {
     const openai = Response.json({
       id: "chatcmpl_1",
-      choices: [
-        { message: { content: "Hello!" }, finish_reason: "stop" },
-      ],
+      choices: [{ message: { content: "Hello!" }, finish_reason: "stop" }],
       usage: { prompt_tokens: 3, completion_tokens: 2 },
     });
     const res = await openAIChatToAnthropicMessages(openai, "claude-sonnet-4-5");
@@ -228,7 +236,10 @@ describe("openAIChatStreamToAnthropicStream", () => {
       if (!eventLine || dataLines.length === 0) continue;
       const eventType = eventLine.slice(6).trim();
       try {
-        events.push({ event: eventType, data: JSON.parse(dataLines.join("\n")) as Record<string, unknown> });
+        events.push({
+          event: eventType,
+          data: JSON.parse(dataLines.join("\n")) as Record<string, unknown>,
+        });
       } catch {
         // skip
       }

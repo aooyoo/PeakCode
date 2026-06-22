@@ -223,12 +223,14 @@ function findModelInRegistry(
       createProviderModelFallback(registry, { provider: parsed.provider, id: parsed.id })
     );
   }
-  return registry
-    .getAll()
-    .find((model) => model.id === parsed.id || `${model.provider}/${model.id}` === parsed.id) ??
+  return (
+    registry
+      .getAll()
+      .find((model) => model.id === parsed.id || `${model.provider}/${model.id}` === parsed.id) ??
     LOCAL_PI_MODEL_ADDITIONS.find(
       (model) => model.id === parsed.id || `${model.provider}/${model.id}` === parsed.id,
-    );
+    )
+  );
 }
 
 export function withLocalPiModelAdditions(
@@ -1690,29 +1692,31 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
           const registry = getModelRegistry(agentDir);
           registry.refresh();
           const availableModels = registry.getAvailable();
-          const models = withLocalPiModelAdditions(availableModels, availableModels).map((model) => {
-            const supportedThinkingOptions = getPiSupportedThinkingOptions(model);
-            return {
-              slug: `${model.provider}/${model.id}`,
-              name: model.name,
-              upstreamProviderId: model.provider,
-              upstreamProviderName: registry.getProviderDisplayName(model.provider),
-              ...(supportedThinkingOptions.length > 0
-                ? {
-                    supportedReasoningEfforts: supportedThinkingOptions.map((option) => ({
-                      value: option.value,
-                      label: option.label,
-                      description: option.description,
-                    })),
-                    ...(supportedThinkingOptions.some(
-                      (option) => option.value === DEFAULT_PI_THINKING_LEVEL,
-                    )
-                      ? { defaultReasoningEffort: DEFAULT_PI_THINKING_LEVEL }
-                      : {}),
-                  }
-                : {}),
-            };
-          });
+          const models = withLocalPiModelAdditions(availableModels, availableModels).map(
+            (model) => {
+              const supportedThinkingOptions = getPiSupportedThinkingOptions(model);
+              return {
+                slug: `${model.provider}/${model.id}`,
+                name: model.name,
+                upstreamProviderId: model.provider,
+                upstreamProviderName: registry.getProviderDisplayName(model.provider),
+                ...(supportedThinkingOptions.length > 0
+                  ? {
+                      supportedReasoningEfforts: supportedThinkingOptions.map((option) => ({
+                        value: option.value,
+                        label: option.label,
+                        description: option.description,
+                      })),
+                      ...(supportedThinkingOptions.some(
+                        (option) => option.value === DEFAULT_PI_THINKING_LEVEL,
+                      )
+                        ? { defaultReasoningEffort: DEFAULT_PI_THINKING_LEVEL }
+                        : {}),
+                    }
+                  : {}),
+              };
+            },
+          );
           return { models, source: "pi.sdk", cached: false } satisfies ProviderListModelsResult;
         },
         catch: (cause) =>

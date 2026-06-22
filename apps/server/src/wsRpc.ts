@@ -43,7 +43,11 @@ import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegi
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
 import type { AgentProvisionId } from "@peakcode/contracts";
-import { getAllAgentStatuses, installAgentConfig, type AgentProvisionContext } from "./agentProvisioner";
+import {
+  getAllAgentStatuses,
+  installAgentConfig,
+  type AgentProvisionContext,
+} from "./agentProvisioner";
 import { gatewaySecretName } from "./gateway";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { listLocalUserSkills } from "./localSkills";
@@ -362,13 +366,11 @@ export const makeWsRpcLayer = () =>
               s.gateway.channels.flatMap((ch) =>
                 ch.secrets.map((def) =>
                   secretStore.get(gatewaySecretName(ch.id, def.id)).pipe(
-                    Effect.map(
-                      (value): GatewaySecretStatusResult["secrets"][number] => ({
-                        channelId: ch.id,
-                        secretId: def.id,
-                        hasApiKey: value !== null && value.byteLength > 0,
-                      }),
-                    ),
+                    Effect.map((value): GatewaySecretStatusResult["secrets"][number] => ({
+                      channelId: ch.id,
+                      secretId: def.id,
+                      hasApiKey: value !== null && value.byteLength > 0,
+                    })),
                   ),
                 ),
               ),
@@ -804,17 +806,15 @@ export const makeWsRpcLayer = () =>
 
         [WS_METHODS.gatewayUpdateConfig]: (patch) =>
           rpcEffect(
-            serverSettings
-              .updateSettings({ gateway: patch })
-              .pipe(
-                Effect.tap(() =>
-                  // After saving the new gateway config, re-sync it into every
-                  // already-installed agent so their local config files reflect
-                  // the change immediately. Best-effort: failures are swallowed.
-                  syncInstalledAgents(),
-                ),
-                Effect.map((s) => s.gateway),
+            serverSettings.updateSettings({ gateway: patch }).pipe(
+              Effect.tap(() =>
+                // After saving the new gateway config, re-sync it into every
+                // already-installed agent so their local config files reflect
+                // the change immediately. Best-effort: failures are swallowed.
+                syncInstalledAgents(),
               ),
+              Effect.map((s) => s.gateway),
+            ),
             "Failed to update gateway config",
           ),
 
@@ -837,12 +837,10 @@ export const makeWsRpcLayer = () =>
 
         [WS_METHODS.gatewayRemoveApiKey]: (input) =>
           rpcEffect(
-            secretStore
-              .remove(gatewaySecretName(input.channelId, input.secretId))
-              .pipe(
-                Effect.tap(() => syncInstalledAgents()),
-                Effect.flatMap(() => collectGatewaySecretStatus()),
-              ),
+            secretStore.remove(gatewaySecretName(input.channelId, input.secretId)).pipe(
+              Effect.tap(() => syncInstalledAgents()),
+              Effect.flatMap(() => collectGatewaySecretStatus()),
+            ),
             "Failed to remove gateway secret",
           ),
         [WS_METHODS.agentGetConfigStatus]: () =>

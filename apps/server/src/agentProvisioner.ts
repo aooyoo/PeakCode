@@ -38,14 +38,7 @@ export const PEAKCODE_AGENT_PROVIDER_ID = "peakcode";
 /** Human-readable provider name shown inside agent UIs. */
 export const PEAKCODE_AGENT_PROVIDER_NAME = "PeakCode";
 
-export type AgentProvisionId =
-  | "codex"
-  | "claude"
-  | "opencode"
-  | "kilo"
-  | "cursor"
-  | "pi"
-  | "cline";
+export type AgentProvisionId = "codex" | "claude" | "opencode" | "kilo" | "cursor" | "pi" | "cline";
 
 export interface AgentProvisionStatus {
   readonly id: AgentProvisionId;
@@ -214,7 +207,9 @@ function writeJsonFile(
     const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     const fs = yield* FileSystem.FileSystem;
     const toErr = () => provisionError("codex", `Failed to write ${filePath}`); // tag overwritten by caller context
-    yield* fs.makeDirectory(path.dirname(filePath), { recursive: true }).pipe(Effect.mapError(toErr));
+    yield* fs
+      .makeDirectory(path.dirname(filePath), { recursive: true })
+      .pipe(Effect.mapError(toErr));
     yield* fs.writeFileString(tempPath, contents).pipe(Effect.mapError(toErr));
     yield* fs.rename(tempPath, filePath).pipe(Effect.mapError(toErr));
   });
@@ -268,7 +263,9 @@ function writeCodexConfig(
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
     const toErr = () => provisionError("codex", `Failed to write ${filePath}`);
-    yield* fs.makeDirectory(path.dirname(filePath), { recursive: true }).pipe(Effect.mapError(toErr));
+    yield* fs
+      .makeDirectory(path.dirname(filePath), { recursive: true })
+      .pipe(Effect.mapError(toErr));
     const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     yield* fs.writeFileString(tempPath, contents).pipe(Effect.mapError(toErr));
     yield* fs.rename(tempPath, filePath).pipe(Effect.mapError(toErr));
@@ -280,14 +277,16 @@ function writeCodexConfig(
  * already unit-tested) but writes to the REAL ~/.codex/config.toml rather than
  * an overlay. The injected model is the active channel's Codex mapping.
  */
-export function installCodex(ctx: AgentProvisionContext): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
+export function installCodex(
+  ctx: AgentProvisionContext,
+): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const filePath = codexConfigPath(ctx.env);
     const existing = yield* readCodexConfig(filePath);
     // Lazy-import the injector to avoid a static cycle (codexProcessEnv pulls
     // in process-env concerns we don't need here).
-    const { injectGatewayProviderIntoCodexConfig } = yield* Effect.promise(() =>
-      import("./codexProcessEnv.ts"),
+    const { injectGatewayProviderIntoCodexConfig } = yield* Effect.promise(
+      () => import("./codexProcessEnv.ts"),
     );
     const next = injectGatewayProviderIntoCodexConfig(existing, {
       gateway: ctx.gateway,
@@ -299,7 +298,9 @@ export function installCodex(ctx: AgentProvisionContext): Effect.Effect<void, Ag
   });
 }
 
-export function codexStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
+export function codexStatus(
+  ctx: AgentProvisionContext,
+): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const filePath = codexConfigPath(ctx.env);
     const text = yield* readCodexConfig(filePath);
@@ -327,7 +328,9 @@ interface ClaudeSettings {
   [key: string]: unknown;
 }
 
-export function installClaude(ctx: AgentProvisionContext): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
+export function installClaude(
+  ctx: AgentProvisionContext,
+): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const filePath = claudeSettingsPath(ctx.env);
     const baseUrl = gatewayAnthropicBaseUrl(ctx.port);
@@ -354,8 +357,7 @@ export function installClaude(ctx: AgentProvisionContext): Effect.Effect<void, A
     const envBlock: Record<string, string> = {};
     for (const [key, value] of Object.entries(oldEnv)) {
       const upperKey = key.toUpperCase();
-      const isModelPin =
-        upperKey.includes("MODEL") && upperKey.startsWith("ANTHROPIC_");
+      const isModelPin = upperKey.includes("MODEL") && upperKey.startsWith("ANTHROPIC_");
       const isAuthToken = upperKey === "ANTHROPIC_AUTH_TOKEN";
       if (!isModelPin && !isAuthToken && typeof value === "string") {
         envBlock[key] = value;
@@ -377,7 +379,9 @@ export function installClaude(ctx: AgentProvisionContext): Effect.Effect<void, A
   });
 }
 
-export function claudeStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
+export function claudeStatus(
+  ctx: AgentProvisionContext,
+): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const filePath = claudeSettingsPath(ctx.env);
     const settings = yield* readJsonObject<ClaudeSettings>(filePath, {});
@@ -409,7 +413,9 @@ interface OpenCodeModelDef {
   readonly limit: { context: number; output: number };
 }
 
-function channelModelsForOpenAi(channel: GatewayChannelConfig | undefined): Record<string, OpenCodeModelDef> {
+function channelModelsForOpenAi(
+  channel: GatewayChannelConfig | undefined,
+): Record<string, OpenCodeModelDef> {
   if (!channel) return {};
   const models = channel.models.length > 0 ? channel.models : [];
   const defs: Record<string, OpenCodeModelDef> = {};
@@ -423,7 +429,9 @@ function channelModelsForOpenAi(channel: GatewayChannelConfig | undefined): Reco
   return defs;
 }
 
-export function installOpenCode(ctx: AgentProvisionContext): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
+export function installOpenCode(
+  ctx: AgentProvisionContext,
+): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const filePath = openCodeConfigPath(ctx.env);
     const existing = yield* readJsonObject<Record<string, unknown>>(filePath, {});
@@ -450,7 +458,9 @@ export function installOpenCode(ctx: AgentProvisionContext): Effect.Effect<void,
   });
 }
 
-export function openCodeStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
+export function openCodeStatus(
+  ctx: AgentProvisionContext,
+): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const filePath = openCodeConfigPath(ctx.env);
     const existing = yield* readJsonObject<Record<string, unknown>>(filePath, {});
@@ -478,7 +488,9 @@ function kiloConfigPath(env: NodeJS.ProcessEnv | undefined): string {
   return `${configHome(env)}/kilo/kilo.jsonc`;
 }
 
-export function installKilo(ctx: AgentProvisionContext): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
+export function installKilo(
+  ctx: AgentProvisionContext,
+): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const filePath = kiloConfigPath(ctx.env);
     const existing = yield* readJsonObject<Record<string, unknown>>(filePath, {
@@ -503,7 +515,9 @@ export function installKilo(ctx: AgentProvisionContext): Effect.Effect<void, Age
   });
 }
 
-export function kiloStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
+export function kiloStatus(
+  ctx: AgentProvisionContext,
+): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const filePath = kiloConfigPath(ctx.env);
     const existing = yield* readJsonObject<Record<string, unknown>>(filePath, {});
@@ -534,7 +548,9 @@ function vsCodeChatModelsPath(profile: string, env: NodeJS.ProcessEnv | undefine
 }
 
 /** Picks the first VS Code-family profile whose config file already exists. */
-function selectedVsCodeProfile(env: NodeJS.ProcessEnv | undefined): Effect.Effect<string, never, FileSystem.FileSystem> {
+function selectedVsCodeProfile(
+  env: NodeJS.ProcessEnv | undefined,
+): Effect.Effect<string, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     for (const profile of VS_CODE_PROFILES) {
       const exists = yield* fileExists(vsCodeChatModelsPath(profile, env));
@@ -544,7 +560,9 @@ function selectedVsCodeProfile(env: NodeJS.ProcessEnv | undefined): Effect.Effec
   });
 }
 
-export function installCursor(ctx: AgentProvisionContext): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
+export function installCursor(
+  ctx: AgentProvisionContext,
+): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const profile = yield* selectedVsCodeProfile(ctx.env);
     const filePath = vsCodeChatModelsPath(profile, ctx.env);
@@ -566,7 +584,9 @@ export function installCursor(ctx: AgentProvisionContext): Effect.Effect<void, A
   });
 }
 
-export function cursorStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
+export function cursorStatus(
+  ctx: AgentProvisionContext,
+): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const profile = yield* selectedVsCodeProfile(ctx.env);
     const filePath = vsCodeChatModelsPath(profile, ctx.env);
@@ -593,7 +613,9 @@ function piConfigPath(env: NodeJS.ProcessEnv | undefined): string {
   return `${homeDir(env)}/.pi/agent/models.json`;
 }
 
-export function installPi(ctx: AgentProvisionContext): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
+export function installPi(
+  ctx: AgentProvisionContext,
+): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const filePath = piConfigPath(ctx.env);
     const existing = yield* readJsonObject<Record<string, unknown>>(filePath, {});
@@ -628,14 +650,14 @@ export function installPi(ctx: AgentProvisionContext): Effect.Effect<void, Agent
   });
 }
 
-export function piStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
+export function piStatus(
+  ctx: AgentProvisionContext,
+): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const filePath = piConfigPath(ctx.env);
     const existing = yield* readJsonObject<Record<string, unknown>>(filePath, {});
     const providers = existing.providers as Record<string, unknown> | undefined;
-    const entry = providers?.[PEAKCODE_AGENT_PROVIDER_ID] as
-      | { baseUrl?: string }
-      | undefined;
+    const entry = providers?.[PEAKCODE_AGENT_PROVIDER_ID] as { baseUrl?: string } | undefined;
     const baseUrl = entry?.baseUrl ?? "";
     const installed = baseUrl.includes(String(ctx.port));
     return {
@@ -660,11 +682,12 @@ function clineSecretsPath(env: NodeJS.ProcessEnv | undefined): string {
   return `${homeDir(env)}/.cline/data/secrets.json`;
 }
 
-export function installCline(ctx: AgentProvisionContext): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
+export function installCline(
+  ctx: AgentProvisionContext,
+): Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const channel = activeChannel(ctx.gateway);
-    const modelId =
-      (channel ? resolveAgentModel(channel, "codex") : null) ?? "peakcode-model";
+    const modelId = (channel ? resolveAgentModel(channel, "codex") : null) ?? "peakcode-model";
     const globalStatePath = clineGlobalStatePath(ctx.env);
     const secretsPath = clineSecretsPath(ctx.env);
 
@@ -700,7 +723,9 @@ export function installCline(ctx: AgentProvisionContext): Effect.Effect<void, Ag
   });
 }
 
-export function clineStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
+export function clineStatus(
+  ctx: AgentProvisionContext,
+): Effect.Effect<AgentProvisionStatus, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const filePath = clineGlobalStatePath(ctx.env);
     const existing = yield* readJsonObject<Record<string, unknown>>(filePath, {});
@@ -723,7 +748,9 @@ export function clineStatus(ctx: AgentProvisionContext): Effect.Effect<AgentProv
 
 const INSTALLERS: Record<
   AgentProvisionId,
-  (ctx: AgentProvisionContext) => Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path>
+  (
+    ctx: AgentProvisionContext,
+  ) => Effect.Effect<void, AgentProvisionError, FileSystem.FileSystem | Path.Path>
 > = {
   codex: installCodex,
   claude: installClaude,
@@ -773,7 +800,10 @@ export function installAgentConfig(
 export function getAllAgentStatuses(
   ctx: AgentProvisionContext,
 ): Effect.Effect<AgentProvisionStatus[], never, FileSystem.FileSystem> {
-  return Effect.all(AGENT_PROVISION_ORDER.map((id) => STATUS_CHECKS[id](ctx)), {
-    concurrency: "unbounded",
-  });
+  return Effect.all(
+    AGENT_PROVISION_ORDER.map((id) => STATUS_CHECKS[id](ctx)),
+    {
+      concurrency: "unbounded",
+    },
+  );
 }

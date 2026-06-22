@@ -110,10 +110,10 @@ function responsesContentToChatContent(content: unknown): unknown {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content ?? "";
 
-  const parts: Array<
+  type ResponseContentPart =
     | { type: "text"; text: string }
-    | { type: "image_url"; image_url: { url: string } }
-  > = content.flatMap((part) => {
+    | { type: "image_url"; image_url: { url: string } };
+  const parts: Array<ResponseContentPart> = content.flatMap<ResponseContentPart>((part) => {
     if (!isRecord(part)) return [];
     if (
       (part.type === "input_text" || part.type === "output_text" || part.type === "text") &&
@@ -254,9 +254,10 @@ export function responsesPayloadToChatPayload(
   return responsesPayloadToChatPayloadWithContext(payload).chatPayload;
 }
 
-export function responsesPayloadToChatPayloadWithContext(
-  payload: Record<string, unknown>,
-): { chatPayload: Record<string, unknown>; contextInputItems: unknown[] } {
+export function responsesPayloadToChatPayloadWithContext(payload: Record<string, unknown>): {
+  chatPayload: Record<string, unknown>;
+  contextInputItems: unknown[];
+} {
   const contextInputItems = responseContextInputItems(payload);
   const result: Record<string, unknown> = {
     model: payload.model,

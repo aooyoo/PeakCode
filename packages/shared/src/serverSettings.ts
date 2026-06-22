@@ -30,13 +30,9 @@ function mergeGatewayChannelPatches(
     patchesById.has(channel.id),
   );
 
-  const mergeChannel = (
-    channel: GatewayChannelConfig | GatewayChannelPatchEntry,
-  ) => {
+  const mergeChannel = (channel: GatewayChannelConfig | GatewayChannelPatchEntry) => {
     const existing = current.gateway.channels.find((candidate) => candidate.id === channel.id);
-    return existing
-      ? deepMerge(existing, channel as DeepPartial<GatewayChannelConfig>)
-      : channel;
+    return existing ? deepMerge(existing, channel as DeepPartial<GatewayChannelConfig>) : channel;
   };
 
   const channels = coversEveryCurrentChannel
@@ -45,9 +41,7 @@ function mergeGatewayChannelPatches(
         ...current.gateway.channels.map((channel) =>
           patchesById.has(channel.id) ? mergeChannel(patchesById.get(channel.id)!) : channel,
         ),
-        ...channelPatches
-          .filter((channel) => !currentIds.has(channel.id))
-          .map(mergeChannel),
+        ...channelPatches.filter((channel) => !currentIds.has(channel.id)).map(mergeChannel),
       ];
 
   return {

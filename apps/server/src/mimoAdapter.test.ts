@@ -40,7 +40,13 @@ describe("mimoBuildQuery", () => {
 
   it("extracts text from array content parts", () => {
     const query = mimoBuildQuery([
-      { role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ],
+      },
     ]);
     expect(query).toBe("user: a\nb");
   });
@@ -89,11 +95,7 @@ describe("mimoBuildRequestBody", () => {
 
 describe("mimoMissingSecrets", () => {
   it("returns all three ids when nothing is provided", () => {
-    expect(mimoMissingSecrets({})).toEqual([
-      "serviceToken",
-      "userId",
-      "xiaomichatbot_ph",
-    ]);
+    expect(mimoMissingSecrets({})).toEqual(["serviceToken", "userId", "xiaomichatbot_ph"]);
   });
 
   it("returns only the blank ones", () => {
@@ -211,7 +213,9 @@ describe("mimoStreamToChatStream", () => {
       'data: {"type":"text","content":"Hi"}\n',
       'data: {"type":"text","content":" there"}\n',
     ]);
-    const chunks = await collectChunks(mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"));
+    const chunks = await collectChunks(
+      mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"),
+    );
     // First chunk is always the role delta.
     expect(chunks[0]?.delta).toEqual({ role: "assistant" });
     // The tag-state machine holds back a few trailing chars to avoid splitting
@@ -229,9 +233,17 @@ describe("mimoStreamToChatStream", () => {
     const upstream = mimoSseResponse([
       'data: {"type":"text","content":"<think>reasoning</think>answer"}\n',
     ]);
-    const chunks = await collectChunks(mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"));
-    const reasoning = chunks.filter((c) => c.delta.reasoning).map((c) => c.delta.reasoning).join("");
-    const content = chunks.filter((c) => c.delta.content).map((c) => c.delta.content).join("");
+    const chunks = await collectChunks(
+      mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"),
+    );
+    const reasoning = chunks
+      .filter((c) => c.delta.reasoning)
+      .map((c) => c.delta.reasoning)
+      .join("");
+    const content = chunks
+      .filter((c) => c.delta.content)
+      .map((c) => c.delta.content)
+      .join("");
     expect(reasoning).toBe("reasoning");
     expect(content).toBe("answer");
   });
@@ -244,9 +256,17 @@ describe("mimoStreamToChatStream", () => {
       'data: {"type":"text","content":"<thi"}\n',
       'data: {"type":"text","content":"nk>reasoning</think>out"}\n',
     ]);
-    const chunks = await collectChunks(mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"));
-    const allContent = chunks.filter((c) => c.delta.content).map((c) => c.delta.content).join("");
-    const allReasoning = chunks.filter((c) => c.delta.reasoning).map((c) => c.delta.reasoning).join("");
+    const chunks = await collectChunks(
+      mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"),
+    );
+    const allContent = chunks
+      .filter((c) => c.delta.content)
+      .map((c) => c.delta.content)
+      .join("");
+    const allReasoning = chunks
+      .filter((c) => c.delta.reasoning)
+      .map((c) => c.delta.reasoning)
+      .join("");
     // Nothing should have leaked as content before the tag resolved.
     expect(allContent).toBe("out");
     expect(allReasoning).toBe("reasoning");
@@ -256,8 +276,13 @@ describe("mimoStreamToChatStream", () => {
     // "<thi" arrives then the stream ends; with no closing marker, the buffered
     // partial must be emitted as content (it was never a real tag).
     const upstream = mimoSseResponse(['data: {"type":"text","content":"ab<thi"}\n']);
-    const chunks = await collectChunks(mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"));
-    const content = chunks.filter((c) => c.delta.content).map((c) => c.delta.content).join("");
+    const chunks = await collectChunks(
+      mimoStreamToChatStream(upstream, "mimo/mimo-v2-flash-studio"),
+    );
+    const content = chunks
+      .filter((c) => c.delta.content)
+      .map((c) => c.delta.content)
+      .join("");
     expect(content).toBe("ab<thi");
   });
 });

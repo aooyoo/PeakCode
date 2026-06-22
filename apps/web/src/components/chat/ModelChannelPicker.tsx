@@ -169,13 +169,7 @@ function ChannelStatus({ enabled }: { enabled: boolean }) {
   );
 }
 
-function ChannelListItem({
-  channel,
-  enabled,
-}: {
-  channel: ModelChannel;
-  enabled: boolean;
-}) {
+function ChannelListItem({ channel, enabled }: { channel: ModelChannel; enabled: boolean }) {
   return (
     <div
       className={cn(
@@ -217,13 +211,7 @@ export const ModelChannelSection = memo(function ModelChannelSection() {
           {CHANNELS.map((channel) => {
             const serverChannel = serverChannels.find((ch) => ch.id === channel.id);
             const isEnabled = serverChannel?.enabled ?? false;
-            return (
-              <ChannelListItem
-                key={channel.id}
-                channel={channel}
-                enabled={isEnabled}
-              />
-            );
+            return <ChannelListItem key={channel.id} channel={channel} enabled={isEnabled} />;
           })}
         </div>
       </MenuGroup>

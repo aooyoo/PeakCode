@@ -3219,7 +3219,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ? gatewayRedirect.value
           : { gateway: undefined, port: 0 };
         const gatewayActive = isClaudeGatewayActive(gatewayResolved.gateway);
-        const gatewayModel = gatewayActive ? resolveClaudeGatewayModel(gatewayResolved.gateway) : null;
+        const gatewayModel = gatewayActive
+          ? resolveClaudeGatewayModel(gatewayResolved.gateway)
+          : null;
 
         const apiModelId = gatewayActive
           ? (gatewayModel ?? undefined)
